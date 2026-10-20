@@ -1,0 +1,32 @@
+{
+  // third_party/ holds upstream clones, each with its own .git. VS Code
+  // auto-detects them and lists them in Source Control, which is noise: they
+  // are read-only, fetched by tools/bootstrap.sh, never edited here. Every
+  // clone added there gets a line here in the same change.
+  //
+  // MAME's index carries ~31,000 files while only a hundred are on disk, the
+  // rest skip-worktree under a --no-cone sparse checkout; VS Code counts index
+  // entries and would hit its 10,000 limit.
+  "git.ignoredRepositories": [
+    "third_party/mame",
+    "third_party/fx68k",
+    "third_party/jt6295",
+    "third_party/IKAOPM",
+    "third_party/pocket-utils"
+  ],
+
+  // Keep the file watcher off vendored source and build trees. Not added to
+  // search.exclude: MAME is the oracle and grepping it is routine.
+  "files.watcherExclude": {
+    "**/third_party/**": true,
+    "**/obj_*/**": true,
+    "**/build/**": true
+  },
+
+  "[systemverilog]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  },
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true
+}
