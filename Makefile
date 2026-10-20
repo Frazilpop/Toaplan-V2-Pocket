@@ -9,10 +9,11 @@
 
 VERILATOR ?= verilator
 
-JTFRAME   := rtl/modules/jtframe/hdl
-BOARD     := $(wildcard rtl/dogyuun/*.sv rtl/dogyuun/*.v) \
-             rtl/dogyuun/savestate/ram_adaptor.sv \
-             $(wildcard rtl/modules/v25_compact/*.sv) \
+JTFRAME   := rtl/jtframe
+BOARD     := $(wildcard rtl/board/*.sv) rtl/board/savestate/ram_adaptor.sv \
+             $(wildcard rtl/video/*.sv) \
+             $(wildcard rtl/sound/*.sv rtl/sound/*.v) \
+             $(wildcard rtl/sound/v25_compact/*.sv) \
              $(JTFRAME)/jtframe_bcd_cnt.v \
              $(JTFRAME)/clocking/jtframe_freqinfo.v \
              $(JTFRAME)/cpu/jtframe_68kdtack_cen.v \
