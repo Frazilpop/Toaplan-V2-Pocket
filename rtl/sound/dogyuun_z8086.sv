@@ -1,13 +1,14 @@
 //
-// Batsugun V25 base derived from z8086 by nand2mario.
-// Upstream provenance and the microcode copyright caveat are documented in
-// UPSTREAM.md next to this file.
+// Dogyuun V25 base derived from the restored Batsugun compact z8086 snapshot.
+// Nitro substitution is intentionally applied only when the execution unit
+// consumes an opcode; operands and prefetch traffic remain byte-exact.
 //
 `timescale 1ns/1ns
 
-module batsugun_z8086 #(
+module dogyuun_z8086 #(
     parameter bit POPF_HI_IS_F = 1'b1,
-    parameter UCODE_FILE = "rtl/modules/v25_compact/ucode.hex"
+    parameter UCODE_FILE = "rtl/sound/v25_compact/ucode.hex",
+    parameter NITRO_FILE = "rtl/sound/dogyuun_nitro_decryption.hex"
 ) (
     input             clk,
     input             clock_enable,
@@ -24,6 +25,7 @@ module batsugun_z8086 #(
     input             intr,
     input             nmi,
     output reg        inta,  // interrupt acknowledge, expects intr num on din and ready pulse
+    input             secure_mode,
 
     input             fetch_hold,
     input             instruction_start_hold,
@@ -64,6 +66,7 @@ module batsugun_z8086 #(
     output            arch_segment_override,
     output     [15:0] arch_override_segment,
     output            instruction_done,
+    output      [7:0] instruction_opcode,
     output            instruction_idle,
     output            interrupt_deferred,
 
@@ -253,8 +256,15 @@ wire       q_full;
 wire       q_empty;
 reg        escape_active;
 reg  [7:0] escape_lead;
-wire       escape_start = q_bus == 8'h0f || q_bus == 8'h68 ||
-                          q_bus == 8'h6a || q_bus == 8'hc0 || q_bus == 8'hc1;
+reg  [7:0] nitro_table [0:255];
+wire [7:0] opcode_bus = secure_mode ? nitro_table[q_bus] : q_bus;
+wire       escape_start = opcode_bus == 8'h0f || opcode_bus == 8'h68 ||
+                          opcode_bus == 8'h6a || opcode_bus == 8'hc0 ||
+                          opcode_bus == 8'hc1;
+
+initial begin
+    $readmemh(NITRO_FILE, nitro_table);
+end
 
 assign v25_escape_active = escape_active;
 assign v25_escape_lead = escape_lead;
@@ -663,7 +673,7 @@ always @(posedge clk) begin
     end else if (clock_enable) begin
         if (FC && escape_start && !interrupt_request) begin
             escape_active <= 1'b1;
-            escape_lead <= q_bus;
+            escape_lead <= opcode_bus;
         end
         if (v25_escape_complete || arch_load)
             escape_active <= 1'b0;
@@ -687,6 +697,7 @@ assign NXT = ROME & T1 & uc[0] & ~bus_pending & ~bus_wait & ~writes_memory;
 wire uc_f = uc[10] == 1'b1;
 assign instruction_done = clock_enable &
                           ((ROME & RNI) | (SC & g_1bl & ~g_prefix));
+assign instruction_opcode = IR;
 assign instruction_idle = loader_state == 2'd0 &&
                           !ROME && !escape_active;
 
@@ -763,7 +774,7 @@ always @(posedge clk) begin
 end
 
 // Microcode sequencing is a 3-stage pipeline:
-// Stage 0 (FC): opcode (q_bus) -> u-addr ({AR,CR}). Once per instruction.
+// Stage 0 (FC): decoded opcode -> u-addr ({AR,CR}). Once per instruction.
 // Stage 1 (SC | loader_state[1] & ~stall): u-addr -> microcode, CR++, set ROME=1
 // Stage 2 (ROME & ~stall): execute microcode
 //  - if jump, ROME=0 and load new u-addr
@@ -801,19 +812,19 @@ always @(posedge clk) begin
                 N_next <= 3'b0;
             end else begin
                 // Set microcode entry address
-                {AR, CR} <= {q_bus, 4'b0};
-                IR <= q_bus;
+                {AR, CR} <= {opcode_bus, 4'b0};
+                IR <= opcode_bus;
 
                 // group decode
                 {g_carry, g_len1, g_forcebyte, g_w, g_1bl, g_d, g_seg_reg_bits, g_axal, g_cond, g_alu_top,
-                 g_2br_not, g_prefix, g_grp345, g_modrm_not, g_inout} <= group_decode(q_bus);
+                 g_2br_not, g_prefix, g_grp345, g_modrm_not, g_inout} <= group_decode(opcode_bus);
                 // non-group instructions
-                g_alu_in_opcode <= ~(q_bus[7:4] == 4'hF & q_bus[2:1] == 2'b11 |   // group345
-                                     q_bus[3:2] == 2'b0 & (q_bus[7:4] == 4'h8 | q_bus[7:4] == 4'hD)); // group 1 and 2
+                g_alu_in_opcode <= ~(opcode_bus[7:4] == 4'hF & opcode_bus[2:1] == 2'b11 |   // group345
+                                     opcode_bus[3:2] == 2'b0 & (opcode_bus[7:4] == 4'h8 | opcode_bus[7:4] == 4'hD)); // group 1 and 2
 
                 // Store M/N for decode in SC and later
-                M_next <= q_bus[2:0];               // M_next so NXT does not overwrite M
-                N_next <= q_bus[5:3];
+                M_next <= opcode_bus[2:0];          // M_next so NXT does not overwrite M
+                N_next <= opcode_bus[5:3];
             end
         end
         // Second cycle: group decode complete
@@ -1132,7 +1143,7 @@ always @(posedge clk) begin
     if (!reset_n) begin
     end else if (clock_enable) begin
         if (FC) begin
-            X <= q_bus[6:3];
+            X <= opcode_bus[6:3];
         end
         if (SC & ~g_alu_in_opcode) begin
             if ((IR == 8'hF6 || IR == 8'hF7) && q_bus[5:3] == 3'b000)
