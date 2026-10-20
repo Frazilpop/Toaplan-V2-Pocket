@@ -26,7 +26,10 @@
 //
 // Frames count from the release of reset, which is where MAME's power-on is:
 // the raster and the 68000 start together. Frame N is the picture finished
-// at the N-th start of vblank (MAME's frame N, the dump script's fNNNNN).
+// at the N-th start of vblank. The board scans frame N out of the copy of
+// VRAM, sprites and palette taken at the vblank before it, where MAME draws
+// its picture N at frame N's vblank: so frame N here is MAME's picture N-1
+// (the dump script's f<N-1>).
 
 #include "Vtb_batsugun.h"
 #include "verilated.h"

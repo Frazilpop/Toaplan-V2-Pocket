@@ -113,12 +113,15 @@ def main():
     win = mr // 10
     rs = []
     for k in range(0, min(len(mw), len(cw)) - win, win):
+        seg = mw[k:k + win]
+        if math.sqrt(sum(x * x for x in seg) / win) < 327.67:
+            continue                     # silent in MAME: nothing to compare
         best_k = max(corr(mw[k:k + win], cw[k + d:k + d + win]) for d in range(-48, 49, 4)
                      if 0 <= k + d and k + d + win <= len(cw))
         rs.append(best_k)
     if rs:
         rs.sort()
-        print(f"waveform correlation in {len(rs)} windows of 100 ms: median {rs[len(rs) // 2]:.3f}, "
+        print(f"waveform correlation in {len(rs)} sounding windows of 100 ms: median {rs[len(rs) // 2]:.3f}, "
               f"worst {rs[0]:.3f}, best {rs[-1]:.3f}")
     return 0
 
