@@ -1,11 +1,14 @@
 // One GP9001 buffered-object line builder. The descriptor walk and pixel
 // ordering follow MAME 0.288 draw_sprites(): later equal-priority objects win.
+//
+// gfx_size is the chip's graphics region from the image header (0: 2 MB, 1:
+// 4 MB, 2: 8 MB): the sprite code's width and where the upper planes start.
 module dogyuun_gp9001_object_line #(
-    parameter integer GP_INDEX = 0,
     parameter integer MAX_VISIBLE_CHUNKS = 160
 ) (
     input              clk,
     input              rst,
+    input      [1:0]   gfx_size,
     input              start,
     input              commit,
     input      [8:0]   target_y,
@@ -164,15 +167,23 @@ function automatic [21:0] sprite_gfx_addr;
     input        upper_planes;
     reg [20:0] local_address;
     begin
-        if (GP_INDEX == 0) begin
-            local_address = {2'b00, code[15:0], 3'b000} + py;
-            sprite_gfx_addr = {1'b0, local_address} +
-                (upper_planes ? 22'h080000 : 22'h000000);
-        end else begin
-            local_address = {1'b0, code[16:0], 3'b000} + py;
-            sprite_gfx_addr = {1'b0, local_address} +
-                (upper_planes ? 22'h100000 : 22'h000000);
-        end
+        case (gfx_size)
+            2'd0: begin
+                local_address = {2'b00, code[15:0], 3'b000} + py;
+                sprite_gfx_addr = {1'b0, local_address} +
+                    (upper_planes ? 22'h080000 : 22'h000000);
+            end
+            2'd1: begin
+                local_address = {1'b0, code[16:0], 3'b000} + py;
+                sprite_gfx_addr = {1'b0, local_address} +
+                    (upper_planes ? 22'h100000 : 22'h000000);
+            end
+            default: begin  // 8 MB: the code's 18th bit is not carried yet
+                local_address = {1'b0, code[16:0], 3'b000} + py;
+                sprite_gfx_addr = {1'b0, local_address} +
+                    (upper_planes ? 22'h200000 : 22'h000000);
+            end
+        endcase
     end
 endfunction
 

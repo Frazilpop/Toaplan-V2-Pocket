@@ -27,6 +27,10 @@ module dogyuun_v25_cpu #(
     input             reset_n,
     input             clock_enable,
 
+    // Opcode decryption (the nitro table): on for TP-022, off for TP-030's
+    // plain code, from the image header's table id.
+    input             secure_mode,
+
     input      [7:0]  port0_in,
     input      [7:0]  port1_in,
     input      [7:0]  portt_in,
@@ -392,6 +396,14 @@ wire int_go = bus_state == BUS_INTERNAL && !int_step[1] &&
               !eng_ram && !clr_busy;
 wire [8:0] int_index_step = int_step[0] ? int_index1 : int_index0;
 wire int_step_ram = !int_index_step[8] && (!int_step[0] || txn_word);
+// A word whose two bytes share a row goes through the port in one step: a
+// write is then done the next clock, a read the clock after (registered).
+// At 16 MHz an enable can come five clocks after the request, and a bank
+// switch's engine may hold the port for two of them.
+wire int_same_row = txn_word && (int_index0[8:4] == int_index1[8:4]);
+wire int_pair = int_step == 2'd0 && int_same_row && !int_index1[8];
+wire [1:0] int_next_step = (int_step == 2'd0 && txn_word && !int_same_row) ?
+                           2'd1 : (txn_write ? 2'd3 : 2'd2);
 wire int_done = int_step == 2'd3;
 
 function automatic [15:0] arch_bank_word;
@@ -749,8 +761,13 @@ always @(*) begin
         iram_raddr = int_index_step[7:4];
         if (txn_write && int_step_ram) begin
             iram_waddr = int_index_step[7:4];
-            iram_be = 16'h0001 << int_index_step[3:0];
-            iram_wdata = {16{int_step[0] ? txn_dout[15:8] : txn_dout[7:0]}};
+            iram_be = (16'h0001 << int_index_step[3:0]) |
+                      (int_pair ? 16'h0001 << int_index1[3:0] : 16'h0000);
+            if (int_pair)
+                iram_wdata = int_index0[0] ? {8{txn_dout[7:0], txn_dout[15:8]}} :
+                                             {8{txn_dout[15:8], txn_dout[7:0]}};
+            else
+                iram_wdata = {16{int_step[0] ? txn_dout[15:8] : txn_dout[7:0]}};
         end
     end
 end
@@ -782,7 +799,11 @@ always @(posedge clk) begin
     ref_bank <= active_bank;
 
     case (rd_tag)
-        RD_BUS0: int_rd0 <= iram_q[int_index0[3:0] * 8 +: 8];
+        RD_BUS0: begin
+            int_rd0 <= iram_q[int_index0[3:0] * 8 +: 8];
+            if (int_same_row)
+                int_rd1 <= iram_q[int_index1[3:0] * 8 +: 8];
+        end
         RD_BUS1: int_rd1 <= iram_q[int_index1[3:0] * 8 +: 8];
         default: ;
     endcase
@@ -812,7 +833,7 @@ dogyuun_z8086 u_cpu (
     .intr                   (1'b0),
     .nmi                    (1'b0),
     .inta                   (),
-    .secure_mode            (1'b1),
+    .secure_mode            (secure_mode),
     .fetch_hold             (base_fetch_hold),
     .instruction_start_hold (base_instruction_start_hold),
     .arch_load              (cpu_arch_load),
@@ -912,10 +933,10 @@ always @(posedge clk) begin
                 end
             end
             BUS_INTERNAL: begin
-                // Byte 0 then byte 1 through the RAM port, one clock each;
-                // done well before the V25's next enable.
+                // Byte 0 then byte 1 through the RAM port, one clock each
+                // (one for both in a row); done before the V25's next enable.
                 if (int_go)
-                    int_step <= int_step + 2'd1;
+                    int_step <= int_next_step;
                 else if (int_step == 2'd2)
                     int_step <= 2'd3;
                 if (int_done && bus_phase_advance) begin

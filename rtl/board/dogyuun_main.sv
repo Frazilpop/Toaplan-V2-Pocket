@@ -1,13 +1,15 @@
 // Dogyuun MC68000 subsystem: exact clock enable, board map, local memories,
 // GP9001 CPU ports, VDP status, IRQ4, and the V25 release latch.
-// Work RAM is 2^WRAM_AW words: 64 KB (Batsugun) at the default.
+// Work RAM is 2^WRAM_AW words: 64 KB (Batsugun) at the default, 16 KB of it
+// mapped unless wram_64k. The 68000 runs at 94.5 x cpu_num / 189 MHz.
 module dogyuun_main #(
-    parameter integer CPU_FIXED_WAIT = 0,
     parameter integer WRAM_AW = 15
 ) (
     input              clk,
     input              rst,
     input              halt_n,
+    input      [6:0]   cpu_num,
+    input              wram_64k,
 
     output             rom_cs,
     output     [17:0]  rom_addr,
@@ -92,6 +94,7 @@ wire mapped_cs;
 wire unmapped_cs;
 
 dogyuun_main_decode #(.WRAM_AW(WRAM_AW)) u_decode (
+    .wram_64k      (wram_64k),
     .addr          (cpu_addr8),
     .bus_active    (cpu_bus_active),
     .rw            (cpu_rw),
@@ -222,31 +225,16 @@ always @(posedge clk) begin
 end
 
 wire cpu_bus_busy = (normal_rom_read_cs && !rom_ok) || gp_wait;
-wire [15:0] cpu_fave;
-wire [15:0] cpu_fworst;
-
-jtframe_68kdtack_cen #(
-    .W(8),
-    .MFREQ(94500),
-    .WAIT1(CPU_FIXED_WAIT)
-) u_cpu_dtack (
-    .rst       (cpu_core_reset),
+dogyuun_68k_cen u_cpu_cen (
     .clk       (clk),
-    .cpu_cen   (cpu_cen),
-    .cpu_cenb  (cpu_cenb),
-    .bus_cs    (cpu_bus_active),
-    .bus_busy  (cpu_bus_busy),
-    .bus_legit (1'b0),
-    .bus_ack   (1'b0),
+    .rst       (cpu_core_reset),
+    .num       (cpu_num),
     .ASn       (cpu_as_n),
     .DSn       ({cpu_uds_n, cpu_lds_n}),
-    .num       (7'd25),
-    .den       (8'd189),
-    .wait2     (1'b0),
-    .wait3     (1'b0),
-    .DTACKn    (cpu_dtack_n),
-    .fave      (cpu_fave),
-    .fworst    (cpu_fworst)
+    .bus_busy  (cpu_bus_busy),
+    .cpu_cen   (cpu_cen),
+    .cpu_cenb  (cpu_cenb),
+    .DTACKn    (cpu_dtack_n)
 );
 
 fx68k u_main68k (
@@ -338,7 +326,7 @@ jtframe_dual_ram16 #(.AW(11)) u_palette_ram (
 wire [15:0] cpu_din_mux =
     normal_rom_read_cs ? rom_data :
     wram_cs ? wram_dout :
-    shared_cs ? {8'hff, shared_dout} :
+    shared_cs ? {8'h00, shared_dout} :
     gp0_cs ? gp0_dout :
     gp1_cs ? gp1_dout :
     palette_cs ? palette_dout :
@@ -346,7 +334,7 @@ wire [15:0] cpu_din_mux =
     in2_cs ? in2_data :
     sys_cs ? sys_data :
     vcount_cs ? vcount_data :
-    16'hffff;
+    16'h0000;   // unmapped and write-only: MAME's 68000 reads 0
 
 always @(posedge clk) begin
     if (cpu_core_reset)

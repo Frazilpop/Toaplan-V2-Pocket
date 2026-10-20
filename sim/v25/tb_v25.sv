@@ -6,12 +6,18 @@ module tb_v25 (
     input              clk,
     input              reset_n,
     input      [7:0]   cen_num,     // V25 clock = 94.5 MHz x cen_num/189
+    input              secure_mode, // 1: nitro (Dogyuun), 0: plain (Batsugun)
+    input              dbg,
     // 68000 side of the shared RAM, replayed from MAME
     input              host_we,
     input      [14:0]  host_addr,
     input      [7:0]   host_data,
 
     output             mismatch,
+    // both sides, for the report: {pc, addr, dout&doe, doe, rw, mreq_n,
+    // mstb_n, iostb_n, halted, fault, idle}
+    output     [55:0]  ref_state,
+    output     [55:0]  dut_state,
     output     [19:0]  pc,
     output     [19:0]  bus_addr,
     output     [7:0]   bus_dout,
@@ -67,6 +73,7 @@ dogyuun_v25_cpu_ref u_ref (
 
 dogyuun_v25_cpu u_dut (
     .clk (clk), .reset (!reset_n), .reset_n (reset_n), .clock_enable (cen),
+    .secure_mode (secure_mode),
     .port0_in (8'hff), .port1_in (8'h6f), .portt_in (8'hff),
     .bus_addr (b_addr), .bus_dout (b_dout), .bus_din (b_din),
     .bus_doe (b_doe), .bus_r_w (b_rw), .bus_mreq_n (b_mreq),
@@ -80,10 +87,19 @@ assign mismatch = reset_n && (
      a_halt, a_fault, a_pc, a_idle} !=
     {b_addr, b_dout & {8{b_doe}}, b_doe, b_rw, b_mreq, b_mstb, b_iostb,
      b_halt, b_fault, b_pc, b_idle});
+assign ref_state = {a_pc, a_addr, a_dout & {8{a_doe}}, a_doe, a_rw, a_mreq,
+                    a_mstb, a_iostb, a_halt, a_fault, a_idle};
+assign dut_state = {b_pc, b_addr, b_dout & {8{b_doe}}, b_doe, b_rw, b_mreq,
+                    b_mstb, b_iostb, b_halt, b_fault, b_idle};
 assign pc = b_pc;
 assign bus_addr = b_addr;
 assign bus_dout = b_dout;
 assign bus_write = !b_mreq && !b_mstb && !b_rw && b_doe;
+
+always @(posedge clk) if (dbg)
+    $display("ref idle %b ii %b bus %0d rd %b wr %b ext %b esc %0d ea %b so %b idf %b t2 %b iep %b bcp %b lpp %b | dut idle %b ii %b bus %0d rd %b wr %b ext %b esc %0d ea %b so %b idf %b t2 %b iep %b bcp %b lpp %b eng %0d",
+        a_idle, u_ref.instruction_idle, u_ref.bus_state, u_ref.cpu_rd, u_ref.cpu_wr, u_ref.ext_req, u_ref.escape_state, u_ref.escape_active, u_ref.arch_segment_override, u_ref.interrupt_deferred, u_ref.timer2_irq_request, u_ref.irq_entry_pending, u_ref.bank_commit_pending, u_ref.load_prepare_pending,
+        b_idle, u_dut.instruction_idle, u_dut.bus_state, u_dut.cpu_rd, u_dut.cpu_wr, u_dut.ext_req, u_dut.escape_state, u_dut.escape_active, u_dut.arch_segment_override, u_dut.interrupt_deferred, u_dut.timer2_irq_request, u_dut.irq_entry_pending, u_dut.bank_commit_pending, u_dut.load_prepare_pending, u_dut.eng_step);
 
 // Coverage: register-bank switches and internal RAM accesses by the program.
 reg bank_d = 1'b0;

@@ -5,7 +5,14 @@
 #   make v25      the V25 wrapper against upstream's (eec1fc3), clock for
 #                 clock, on a MAME feed: FEED=build/mame/dogyuun_v25_feed.txt
 #                 (tools/mame_toaplan2_v25_feed.lua), CLOCKS=600000000,
-#                 CEN=25 (12.5 MHz; upstream's wrapper decrypts as Dogyuun)
+#                 CEN=25 (12.5 MHz), SECURE=1 (nitro, Dogyuun; 0 for
+#                 Batsugun's plain code, both wrappers alike):
+#                 make v25 FEED=build/mame/batsugun_v25_feed.txt CEN=32 SECURE=0
+#   make sim      the board-level harness, build/obj_batsugun/tb_batsugun
+#                 (sim/batsugun/build.sh): the board and jtframe_sdram64
+#                 with jtframe's SDRAM model, MAME as the oracle
+#                 (tools/pocket/compare_bus.py, compare_frame.py,
+#                 compare_wav.py)
 #   make clean
 #
 # Run tools/bootstrap.sh first: fx68k, jt6295 and IKAOPM are used in place
@@ -18,9 +25,6 @@ BOARD     := $(wildcard rtl/board/*.sv) \
              $(wildcard rtl/video/*.sv) \
              $(wildcard rtl/sound/*.sv rtl/sound/*.v) \
              $(wildcard rtl/sound/v25_compact/*.sv) \
-             $(JTFRAME)/jtframe_bcd_cnt.v \
-             $(JTFRAME)/clocking/jtframe_freqinfo.v \
-             $(JTFRAME)/cpu/jtframe_68kdtack_cen.v \
              $(wildcard $(JTFRAME)/ram/*.v) \
              $(JTFRAME)/sdram/jtframe_rom_1slot.v $(JTFRAME)/sdram/jtframe_rom_2slots.v \
              $(wildcard $(JTFRAME)/sdram/jtframe_romrq*.v) \
@@ -38,14 +42,15 @@ DEFINES   := -DJTFRAME_BUTTONS=3 -DJTFRAME_MCLK=48000000
 VFLAGS    := --lint-only -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND \
              -Wno-WIDTHTRUNC -Wno-WIDTHCONCAT -Wno-CASEINCOMPLETE
 
-V25_REF   := build/v25/dogyuun_v25_cpu_ref.sv
+SECURE    ?= 1
+V25_REF   := build/v25/dogyuun_v25_cpu_ref_s$(SECURE).sv
 V25_SRC   := rtl/sound/dogyuun_v25_cpu.sv rtl/sound/dogyuun_z8086.sv \
              rtl/sound/v25_compact/batsugun_z8086_alu.sv
 FEED      ?= build/mame/dogyuun_v25_feed.txt
 CLOCKS    ?= 600000000
 CEN       ?= 25
 
-.PHONY: lint v25 clean
+.PHONY: lint v25 sim clean
 lint:
 	@test -d third_party/fx68k || { echo "run tools/bootstrap.sh first"; exit 1; }
 	$(VERILATOR) $(VFLAGS) $(DEFINES) --top-module dogyuun_game $(BOARD) $(THIRD)
@@ -55,14 +60,19 @@ lint:
 $(V25_REF):
 	mkdir -p build/v25
 	git show eec1fc3:rtl/dogyuun/dogyuun_v25_cpu.sv | \
-	    sed 's/^module dogyuun_v25_cpu /module dogyuun_v25_cpu_ref /' > $@
+	    sed -e 's/^module dogyuun_v25_cpu /module dogyuun_v25_cpu_ref /' \
+	        -e "s/\.secure_mode *(1'b1)/.secure_mode (1'b$(SECURE))/" > $@
 
 v25: $(V25_REF)
 	$(VERILATOR) --cc --exe --build -O3 -Wno-fatal -Wno-lint -Wno-style \
-	    -Wno-TIMESCALEMOD --Mdir build/v25/obj --top-module tb_v25 \
+	    -Wno-TIMESCALEMOD --Mdir build/v25/obj_s$(SECURE) --top-module tb_v25 \
 	    sim/v25/tb_v25.sv $(V25_SRC) $(V25_REF) sim/v25/tb_v25.cpp \
 	    -o Vtb_v25 > build/v25/build.log 2>&1 || { tail -30 build/v25/build.log; exit 1; }
-	build/v25/obj/Vtb_v25 $(FEED) $(CLOCKS) $(CEN)
+	build/v25/obj_s$(SECURE)/Vtb_v25 $(FEED) $(CLOCKS) $(CEN) $(SECURE)
+
+sim:
+	sim/batsugun/build.sh > build/sim_build.log 2>&1 || { grep -m5 Error build/sim_build.log; exit 1; }
+	@echo "sim: build/obj_batsugun/tb_batsugun"
 
 clean:
-	rm -rf obj_dir build/tmp build/v25
+	rm -rf obj_dir build/tmp build/v25 build/obj_batsugun

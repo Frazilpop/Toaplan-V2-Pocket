@@ -3,6 +3,9 @@
 module dogyuun_gp9001_video (
     input              clk,
     input              rst,
+    input              gal_mix,
+    input      [1:0]   gp0_gfx_size,
+    input      [1:0]   gp1_gfx_size,
     input              line_start,
     input              line_commit,
     input      [8:0]   target_y,
@@ -87,9 +90,10 @@ assign debug_line_epoch = {gp1_object_epoch, gp1_tile_epoch,
 assign debug_line_valid = {gp1_object_valid, gp1_tile_valid,
                            gp0_object_valid, gp0_tile_valid};
 
-dogyuun_gp9001_tile_line #(.GP_INDEX(0)) u_gp0_tile (
+dogyuun_gp9001_tile_line u_gp0_tile (
     .clk               (clk),
     .rst               (rst),
+    .gfx_size          (gp0_gfx_size),
     .start             (line_start),
     .commit            (line_commit),
     .target_y          (target_y),
@@ -113,9 +117,10 @@ dogyuun_gp9001_tile_line #(.GP_INDEX(0)) u_gp0_tile (
     .scan_valid        (gp0_tile_valid)
 );
 
-dogyuun_gp9001_object_line #(.GP_INDEX(0)) u_gp0_object (
+dogyuun_gp9001_object_line u_gp0_object (
     .clk               (clk),
     .rst               (rst),
+    .gfx_size          (gp0_gfx_size),
     .start             (line_start),
     .commit            (line_commit),
     .target_y          (target_y),
@@ -139,9 +144,10 @@ dogyuun_gp9001_object_line #(.GP_INDEX(0)) u_gp0_object (
     .scan_valid        (gp0_object_valid)
 );
 
-dogyuun_gp9001_tile_line #(.GP_INDEX(1)) u_gp1_tile (
+dogyuun_gp9001_tile_line u_gp1_tile (
     .clk               (clk),
     .rst               (rst),
+    .gfx_size          (gp1_gfx_size),
     .start             (line_start),
     .commit            (line_commit),
     .target_y          (target_y),
@@ -165,9 +171,10 @@ dogyuun_gp9001_tile_line #(.GP_INDEX(1)) u_gp1_tile (
     .scan_valid        (gp1_tile_valid)
 );
 
-dogyuun_gp9001_object_line #(.GP_INDEX(1)) u_gp1_object (
+dogyuun_gp9001_object_line u_gp1_object (
     .clk               (clk),
     .rst               (rst),
+    .gfx_size          (gp1_gfx_size),
     .start             (line_start),
     .commit            (line_commit),
     .target_y          (target_y),
@@ -192,6 +199,7 @@ dogyuun_gp9001_object_line #(.GP_INDEX(1)) u_gp1_object (
 );
 
 dogyuun_gp9001_line_mixer u_mixer (
+    .gal_mix          (gal_mix),
     .display_y        (display_y),
     .display_epoch    (display_epoch),
     .gp0_tile_pixel   (gp0_tile_pixel),

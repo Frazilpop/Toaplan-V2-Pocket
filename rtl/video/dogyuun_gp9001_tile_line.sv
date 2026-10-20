@@ -1,11 +1,13 @@
 // One GP9001 tile-plane line builder. It renders all three 32x32, 16x16
 // tilemaps into a double-buffered 320-pixel line using a held graphics-ROM
 // request. Objects and the second GP are composed by later stages.
-module dogyuun_gp9001_tile_line #(
-    parameter integer GP_INDEX = 0
-) (
+//
+// gfx_size is the chip's graphics region from the image header (0: 2 MB, 1:
+// 4 MB, 2: 8 MB): the tile code's width and where the upper planes start.
+module dogyuun_gp9001_tile_line (
     input              clk,
     input              rst,
+    input      [1:0]   gfx_size,
     input              start,
     input              commit,
     input      [8:0]   target_y,
@@ -145,15 +147,23 @@ function automatic [21:0] tile_gfx_addr;
         word_in_tile = (py[3] ? (5'd16 + {2'b00, py[2:0]}) :
                                       {2'b00, py[2:0]}) +
                        (right_half ? 5'd8 : 5'd0);
-        if (GP_INDEX == 0) begin
-            tile_offset = {2'b00, code[13:0], 5'b00000} + word_in_tile;
-            tile_gfx_addr = {1'b0, tile_offset} +
-                            (upper_planes ? 22'h080000 : 22'h000000);
-        end else begin
-            tile_offset = {1'b0, code[14:0], 5'b00000} + word_in_tile;
-            tile_gfx_addr = {1'b0, tile_offset} +
-                            (upper_planes ? 22'h100000 : 22'h000000);
-        end
+        case (gfx_size)
+            2'd0: begin
+                tile_offset = {2'b00, code[13:0], 5'b00000} + word_in_tile;
+                tile_gfx_addr = {1'b0, tile_offset} +
+                                (upper_planes ? 22'h080000 : 22'h000000);
+            end
+            2'd1: begin
+                tile_offset = {1'b0, code[14:0], 5'b00000} + word_in_tile;
+                tile_gfx_addr = {1'b0, tile_offset} +
+                                (upper_planes ? 22'h100000 : 22'h000000);
+            end
+            default: begin
+                tile_offset = {code[15:0], 5'b00000} + word_in_tile;
+                tile_gfx_addr = {1'b0, tile_offset} +
+                                (upper_planes ? 22'h200000 : 22'h000000);
+            end
+        endcase
     end
 endfunction
 
