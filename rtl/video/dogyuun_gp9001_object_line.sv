@@ -90,6 +90,12 @@ reg [8:0] stage1_position_y = 9'd0;
 reg [4:0] stage1_x_chunks = 5'd1;
 reg stage1_effective_flip_y = 1'b0;
 reg stage1_enable = 1'b0;
+// Stage 0, latched in ST_DESC_CAPTURE1 (see below): what each position is
+// added to, and the Y position's flip-adjusted addend and wrap threshold.
+reg [8:0] stage0_add_x = 9'd0;
+reg [8:0] stage0_add_y = 9'd0;
+reg [8:0] stage0_add_y_shifted = 9'd0;
+reg stage0_flip_y_local = 1'b0;
 
 reg process_hits_line = 1'b0;
 reg [4:0] process_x_chunks = 5'd1;
@@ -218,18 +224,32 @@ wire [16:0] desc_code_base = {desc_attr[0], desc_code};
 // and old_x/old_y are written only in ST_IDLE and ST_DESC_PROCESS, so they
 // still carry the previous descriptor's value exactly as the fused version
 // observed them.
+//
+// Stage 0 takes everything that does not need the Y word out of that cycle:
+// in ST_DESC_CAPTURE1 desc_attr is latched and old_x/old_y hold the previous
+// descriptor's, so the addend (old position, or offset - scroll) and the
+// local flip's -7 are registered there. Stage 1 is then one 9-bit add off
+// the object RAM's output, a two-bit wrap test and the global-flip mirror
+// (the RAM output -> stage1_base_y path missed 94.5 MHz by 0.18 ns at slow
+// 0C on the Pocket's part). All of it is modulo 512, as before.
 wire [8:0] desc_raw_x = desc_x[15:7];
 wire [8:0] desc_raw_y = object_data[15:7];
-wire [8:0] desc_position_x = desc_attr[14] ?
-    old_x + desc_raw_x : desc_raw_x - sprite_scroll_x + sprite_x_offset;
-wire [8:0] desc_position_y = desc_attr[14] ?
-    old_y + desc_raw_y : desc_raw_y - sprite_scroll_y + sprite_y_offset;
+wire [8:0] stage0_next_add_x = desc_attr[14] ? old_x :
+    sprite_x_offset - sprite_scroll_x;
+wire [8:0] stage0_next_add_y = desc_attr[14] ? old_y :
+    sprite_y_offset - sprite_scroll_y;
+wire [8:0] desc_position_x = desc_raw_x + stage0_add_x;
+wire [8:0] desc_position_y = desc_raw_y + stage0_add_y;
+wire [8:0] desc_shifted_y = desc_raw_y + stage0_add_y_shifted;
+// wrapped_base for Y with its subtract taken out: >= 0x1c0 flipped, else
+// >= 0x180; above it the coordinate is shifted - 512 (top bits all ones).
+wire desc_wrap_y = stage0_flip_y_local ? (desc_shifted_y[8:6] == 3'b111) :
+                                         (desc_shifted_y[8:7] == 2'b11);
+wire signed [11:0] desc_pre_y = {{3{desc_wrap_y}}, desc_shifted_y};
 wire [4:0] desc_x_chunks = {1'b0, desc_x[3:0]} + 5'd1;
 wire [4:0] desc_y_chunks = {1'b0, object_data[3:0]} + 5'd1;
 wire signed [11:0] desc_pre_x = wrapped_base(
     desc_position_x, desc_local_flip_x);
-wire signed [11:0] desc_pre_y = wrapped_base(
-    desc_position_y, desc_local_flip_y);
 wire signed [11:0] desc_base_x = global_flip_x ?
     12'sd320 - desc_pre_x : desc_pre_x;
 wire signed [11:0] desc_base_y = global_flip_y ?
@@ -370,6 +390,10 @@ always @(posedge clk) begin
         stage1_x_chunks <= 5'd1;
         stage1_effective_flip_y <= 1'b0;
         stage1_enable <= 1'b0;
+        stage0_add_x <= 9'd0;
+        stage0_add_y <= 9'd0;
+        stage0_add_y_shifted <= 9'd0;
+        stage0_flip_y_local <= 1'b0;
         process_hits_line <= 1'b0;
         process_x_chunks <= 5'd1;
         process_code_base <= 17'd0;
@@ -457,6 +481,11 @@ always @(posedge clk) begin
             ST_DESC_WAIT1: state <= ST_DESC_CAPTURE1;
             ST_DESC_CAPTURE1: begin
                 desc_code <= object_data;
+                stage0_add_x <= stage0_next_add_x;
+                stage0_add_y <= stage0_next_add_y;
+                stage0_add_y_shifted <= stage0_next_add_y -
+                                        (desc_local_flip_y ? 9'd7 : 9'd0);
+                stage0_flip_y_local <= desc_local_flip_y;
                 object_addr <= {descriptor, 2'b11};
                 state <= ST_DESC_CAPTURE2;
             end
