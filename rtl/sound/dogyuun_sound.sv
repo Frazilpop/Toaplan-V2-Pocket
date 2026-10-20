@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// Dogyuun TP-022 sound subsystem. All logic remains synchronous to the
-// 94.5 MHz game clock; exact board rates are generated as clock enables.
+// Toaplan V2 sound subsystem (V25, YM2151, OKI M6295). All logic remains
+// synchronous to the 94.5 MHz game clock; exact board rates are generated as
+// clock enables, their ratios from the ROM image's header: the V25 at
+// 94.5 x v25_num / 189 MHz (25: 12.5 MHz on TP-022, 32: 16 MHz on TP-030),
+// the OKI at 94.5 x oki_inc / oki_wrap.
 
 module dogyuun_sound #(
     parameter integer V25_BUS_PHASES_USE_CEN = 1,
@@ -16,9 +19,16 @@ module dogyuun_sound #(
     input                       reset,
     input                       clk,
     input                       v25_enable,
-    input      [7:0]            dip_a,
-    input      [7:0]            dip_b,
-    input      [7:0]            region,
+    input      [6:0]            v25_num,
+    input      [4:0]            oki_inc,
+    input      [11:0]           oki_wrap,
+    input                       oki_pin7,
+    input                       secure_mode,
+    // The V25's input ports, active high as MAME's ports (inverted here as
+    // MAME's .exor(0xff)): which DIP bank goes where is the board's.
+    input      [7:0]            port_t,
+    input      [7:0]            port_0,
+    input      [7:0]            port_1,
     input                       ym_enable,
     input                       oki_enable,
     input                       pause,
@@ -69,11 +79,11 @@ always @(posedge clk) begin
         v25_cen <= 1'b0;
     end else if (pause_freeze) begin
         v25_cen <= 1'b0;
-    end else if (v25_cen_accum >= 8'd164) begin
-        v25_cen_accum <= v25_cen_accum + 8'd25 - 8'd189;
+    end else if (v25_cen_accum >= 8'd189 - v25_num) begin
+        v25_cen_accum <= v25_cen_accum + v25_num - 8'd189;
         v25_cen <= 1'b1;
     end else begin
-        v25_cen_accum <= v25_cen_accum + 8'd25;
+        v25_cen_accum <= v25_cen_accum + v25_num;
         v25_cen <= 1'b0;
     end
 end
@@ -99,7 +109,8 @@ always @(posedge clk) begin
     end
 end
 
-// 94.5 MHz * 25 / 2268 = 25 MHz / 24 exactly.
+// 94.5 MHz * 25 / 2268 = 25 MHz / 24 exactly (TP-022); * 8 / 189 = 4 MHz
+// (TP-030); * 2 / 189 = 1 MHz.
 reg [11:0] oki_cen_accum = 12'd0;
 reg        oki_cen = 1'b0;
 always @(posedge clk) begin
@@ -108,11 +119,11 @@ always @(posedge clk) begin
         oki_cen_accum <= 12'd0;
     end else if (pause_freeze) begin
         oki_cen_accum <= oki_cen_accum;
-    end else if (oki_cen_accum >= 12'd2243) begin
-        oki_cen_accum <= oki_cen_accum + 12'd25 - 12'd2268;
-        oki_cen <= 1'b1;
+    end else if (oki_cen_accum >= oki_wrap - oki_inc) begin
+        oki_cen_accum <= oki_cen_accum + oki_inc - oki_wrap;
+        oki_cen <= oki_inc != 5'd0;
     end else begin
-        oki_cen_accum <= oki_cen_accum + 12'd25;
+        oki_cen_accum <= oki_cen_accum + oki_inc;
     end
 end
 
@@ -218,9 +229,10 @@ dogyuun_v25_cpu #(
     .reset             (reset),
     .reset_n           (v25_reset_n),
     .clock_enable      (v25_cen && !pause_freeze),
-    .port0_in          (~dip_a),
-    .port1_in          (~region),
-    .portt_in          (~dip_b),
+    .secure_mode       (secure_mode),
+    .port0_in          (~port_0),
+    .port1_in          (~port_1),
+    .portt_in          (~port_t),
     .bus_addr          (v25_bus_addr),
     .bus_dout          (v25_bus_dout),
     .bus_din           (v25_bus_din),
@@ -350,7 +362,7 @@ jt6295 #(.INTERPOL(0)) u_oki6295 (
     .rst      (oki_chip_reset),
     .clk      (clk),
     .cen      (oki_cen),
-    .ss       (1'b1),
+    .ss       (oki_pin7),
     .wrn      (oki_wr_n),
     .din      (oki_host_data),
     .dout     (oki_dout),

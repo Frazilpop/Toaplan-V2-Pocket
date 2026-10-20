@@ -1,6 +1,11 @@
-// Per-GP tile/object priority followed by Dogyuun's board-level GP order.
-// MAME clears, renders GP1, clears priority, then renders opaque GP0 pixels.
+// Per-GP tile/object priority followed by the board's GP order.
+// TP-022 (Dogyuun): MAME clears, renders GP1, clears priority, then renders
+// opaque GP0 pixels. TP-030 (Batsugun, gal_mix): the GAL as MAME's
+// batsugun_state::screen_update has it - GP0's pixel where GP1's is
+// transparent, GP1's where GP0's is, else GP1's when GP0's colour bits
+// 0x780 are greater, else GP0's.
 module dogyuun_gp9001_line_mixer (
+    input             gal_mix,
     input      [8:0]  display_y,
     input             display_epoch,
 
@@ -57,8 +62,13 @@ wire [14:0] gp1_mixed = mix_gp(gp1_tile_pixel, gp1_object_pixel);
 assign line_ready = gp0_ready && gp1_ready;
 assign gp0_color = gp0_ready ? gp0_mixed[10:0] : 11'd0;
 assign gp1_color = gp1_ready ? gp1_mixed[10:0] : 11'd0;
-assign final_color = line_ready ?
-    ((gp0_mixed[3:0] != 4'h0) ? gp0_mixed[10:0] : gp1_mixed[10:0]) :
-    11'd0;
+wire [10:0] gal_color =
+    (gp1_mixed[3:0] == 4'h0) ? gp0_mixed[10:0] :
+    (gp0_mixed[3:0] == 4'h0) ? gp1_mixed[10:0] :
+    (gp0_mixed[10:7] > gp1_mixed[10:7]) ? gp1_mixed[10:0] : gp0_mixed[10:0];
+wire [10:0] over_color =
+    (gp0_mixed[3:0] != 4'h0) ? gp0_mixed[10:0] : gp1_mixed[10:0];
+
+assign final_color = line_ready ? (gal_mix ? gal_color : over_color) : 11'd0;
 
 endmodule

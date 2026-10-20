@@ -1,5 +1,9 @@
-// Dogyuun integration shell: verified ROM loading, board-accurate raster,
-// MC68000, encrypted V25/audio subsystem, and dual-GP9001 line renderer.
+// Toaplan V2 two-GP9001 board (TP-030 Batsugun, TP-022 Dogyuun): ROM image
+// loading, board-accurate raster, MC68000, V25/audio subsystem, and the
+// dual-GP9001 line renderer. What differs between the boards comes from the
+// image header (dogyuun_rom_loader's cfg_*): clocks, work RAM, the V25's
+// opcode decryption (nitro, or none), its DIP ports, the OKI's rate, the graphics region sizes and
+// the GP mix. dipsw is XORed into the header's DIP defaults (0: MAME's).
 module dogyuun_game #(
     parameter integer AW = 22
 ) (
@@ -111,6 +115,29 @@ wire loader_accepted;
 wire loader_range_error;
 wire loader_overflow_error;
 wire [26:0] loader_last_addr;
+wire        cfg_valid;
+wire [2:0]  cfg_board;
+wire        cfg_two_gp;
+wire [1:0]  cfg_table;
+wire        cfg_oki_pin7;
+wire        cfg_wram_64k;
+wire [6:0]  cfg_cpu_num;
+wire [6:0]  cfg_v25_num;
+wire [4:0]  cfg_oki_inc;
+wire [11:0] cfg_oki_wrap;
+wire [7:0]  cfg_dswa;
+wire [7:0]  cfg_dswb;
+wire [7:0]  cfg_jmpr;
+wire [1:0]  cfg_gp0_size;
+wire [1:0]  cfg_gp1_size;
+localparam [2:0] BOARD_TP030 = 3'd0;
+localparam [2:0] BOARD_TP022 = 3'd1;
+wire [7:0]  dswa = cfg_dswa ^ dipsw[7:0];
+wire [7:0]  dswb = cfg_dswb ^ dipsw[15:8];
+wire [7:0]  jmpr = cfg_jmpr ^ dipsw[23:16];
+// MAME: TP-030 PT/P0/P1 = DSWA/DSWB/JMPR; TP-022 PT/P0 swapped.
+wire [7:0]  v25_port_t = (cfg_board == BOARD_TP022) ? dswb : dswa;
+wire [7:0]  v25_port_0 = (cfg_board == BOARD_TP022) ? dswa : dswb;
 wire main_reset = rst || dwnld_busy;
 (* preserve *) reg [1:0] sound_reset_pipe = 2'b11;
 wire sound_reset = sound_reset_pipe[1];
@@ -253,6 +280,24 @@ dogyuun_rom_loader #(.AW(AW)) u_rom_loader (
     .prog_we        ( prog_we               ),
     .prog_rdy       ( prog_rdy              ),
     .prog_ack       ( prog_ack              ),
+    .cfg_valid      ( cfg_valid             ),
+    .cfg_board      ( cfg_board             ),
+    .cfg_two_gp     ( cfg_two_gp            ),
+    .cfg_table      ( cfg_table             ),
+    .cfg_oki_pin7   ( cfg_oki_pin7          ),
+    .cfg_wram_64k   ( cfg_wram_64k          ),
+    .cfg_cpu_num    ( cfg_cpu_num           ),
+    .cfg_v25_num    ( cfg_v25_num           ),
+    .cfg_oki_inc    ( cfg_oki_inc           ),
+    .cfg_oki_wrap   ( cfg_oki_wrap          ),
+    .cfg_dswa       ( cfg_dswa              ),
+    .cfg_dswb       ( cfg_dswb              ),
+    .cfg_jmpr       ( cfg_jmpr              ),
+    .cfg_gp0_size   ( cfg_gp0_size          ),
+    .cfg_gp1_size   ( cfg_gp1_size          ),
+    .eeprom_we      (                       ),
+    .eeprom_addr    (                       ),
+    .eeprom_data    (                       ),
     .accepted       ( loader_accepted       ),
     .range_error    ( loader_range_error    ),
     .overflow_error ( loader_overflow_error ),
@@ -274,22 +319,26 @@ assign ba2_dsn = 2'b11;
 assign ba3_dsn = 2'b11;
 assign ba3_addr = sound_oki_sdram_addr;
 
-dogyuun_gfx_repack #(.GP_INDEX(0)) u_gp0_tile_repack (
+dogyuun_gfx_repack u_gp0_tile_repack (
+    .size          (cfg_gp0_size),
     .logical_addr  (video_gp0_tile_addr),
     .physical_addr (video_gp0_tile_physical_addr)
 );
 
-dogyuun_gfx_repack #(.GP_INDEX(0)) u_gp0_object_repack (
+dogyuun_gfx_repack u_gp0_object_repack (
+    .size          (cfg_gp0_size),
     .logical_addr  (video_gp0_object_gfx_addr),
     .physical_addr (video_gp0_object_physical_addr)
 );
 
-dogyuun_gfx_repack #(.GP_INDEX(1)) u_gp1_tile_repack (
+dogyuun_gfx_repack u_gp1_tile_repack (
+    .size          (cfg_gp1_size),
     .logical_addr  (video_gp1_tile_addr),
     .physical_addr (video_gp1_tile_physical_addr)
 );
 
-dogyuun_gfx_repack #(.GP_INDEX(1)) u_gp1_object_repack (
+dogyuun_gfx_repack u_gp1_object_repack (
+    .size          (cfg_gp1_size),
     .logical_addr  (video_gp1_object_gfx_addr),
     .physical_addr (video_gp1_object_physical_addr)
 );
@@ -320,6 +369,8 @@ dogyuun_main u_main (
     .clk                 (clk),
     .rst                 (main_reset),
     .halt_n              (dip_pause),
+    .cpu_num             (cfg_cpu_num),
+    .wram_64k            (cfg_wram_64k),
     .rom_cs              (main_rom_cs),
     .rom_addr            (main_rom_addr),
     .rom_data            (main_rom_data),
@@ -363,9 +414,14 @@ dogyuun_sound u_sound (
     .reset               (sound_reset),
     .clk                 (clk),
     .v25_enable          (main_v25_reset_n),
-    .dip_a               (dipsw[7:0]),
-    .dip_b               (dipsw[15:8]),
-    .region              (dipsw[23:16]),
+    .v25_num             (cfg_v25_num),
+    .oki_inc             (cfg_oki_inc),
+    .oki_wrap            (cfg_oki_wrap),
+    .oki_pin7            (cfg_oki_pin7),
+    .secure_mode         (cfg_table == 2'd1),   // nitro; 0 is plain
+    .port_t              (v25_port_t),
+    .port_0              (v25_port_0),
+    .port_1              (jmpr),
     .ym_enable           (snd_en[0]),
     .oki_enable          (snd_en[1]),
     .pause               (!dip_pause),
@@ -457,6 +513,9 @@ dogyuun_gp9001_snapshot u_gp1_snapshot (
 dogyuun_gp9001_video u_video (
     .clk                 (clk),
     .rst                 (video_reset),
+    .gal_mix             (cfg_board == BOARD_TP030),
+    .gp0_gfx_size        (cfg_gp0_size),
+    .gp1_gfx_size        (cfg_gp1_size),
     .line_start          (video_line_start),
     .line_commit         (video_line_commit),
     .target_y            (video_target_y),
