@@ -3,11 +3,16 @@
 // Dogyuun-specific NEC V25 integration. The instruction engine is the local
 // opcode-decrypting compact core; this wrapper supplies the V25 register banks,
 // exercised extended opcodes, internal registers, and periodic timer.
+//
+// The 256-byte internal RAM is block RAM (dogyuun_v25_iram below), 16 rows of
+// 16 bytes. A register bank is two rows: A holds offsets 00-0f (vector PC,
+// saved PSW, saved PC, DS, SS, CS, ES), B offsets 10-1f (DI, SI, BP, SP, BX,
+// DX, CX, AX). The board clock is several times the V25's enable, so a bank
+// switch reads and writes its rows in the clocks between two enables.
 
 `timescale 1ns/1ns
 
 module dogyuun_v25_cpu #(
-    parameter [7:0] SS_IDX = 8'd13,
     parameter integer BUS_PHASES_USE_CEN = 1,
     parameter integer BUS_BYTE_PHASES = 4,
     parameter integer SOUND_WRITE_EXTRA_PHASES = 17,
@@ -38,27 +43,8 @@ module dogyuun_v25_cpu #(
     output            halted,
     output            fault,
     output     [19:0] debug_pc,
-    output            state_idle,
-
-    input             ss_restore_enable,
-    input             ss_restore_commit,
-    input      [63:0] ss_data,
-    input      [31:0] ss_addr,
-    input      [7:0]  ss_select,
-    input             ss_write,
-    input             ss_read,
-    input             ss_query,
-    output reg [63:0] ss_data_out,
-    output reg        ss_ack
+    output            state_idle
 );
-
-localparam [31:0] SS_WORD_COUNT = 32'd39;
-
-localparam [1:0]
-    SS_PORT_IDLE         = 2'd0,
-    SS_PORT_READ_RAM     = 2'd1,
-    SS_PORT_WRITE_RAM    = 2'd2,
-    SS_PORT_WAIT_RELEASE = 2'd3;
 
 localparam [4:0]
     ESC_IDLE           = 5'd0,
@@ -97,12 +83,17 @@ localparam [2:0]
     LOAD_PREP_PUSH     = 3'd3,
     LOAD_PREP_STACK    = 3'd4;
 
-reg [7:0] internal_ram [0:255];
+localparam [1:0]
+    RD_NONE = 2'd0,
+    RD_REF  = 2'd1,
+    RD_BUS0 = 2'd2,
+    RD_BUS1 = 2'd3;
+
 reg [2:0] active_bank;
 
 // Bank switches capture a complete register-bank transaction here, then
-// commit it on the following master clock. This keeps the opcode decoder and
-// compact CPU state off the distributed internal-RAM write path.
+// commit it over the next three master clocks (rows written, target rows
+// read), before the V25's next enable.
 reg        bank_commit_pending;
 reg        bank_commit_write_return;
 reg [2:0]  bank_commit_source;
@@ -129,7 +120,9 @@ reg        load_prepare_pending;
 reg [2:0]  load_prepare_mode;
 reg [2:0]  load_prepare_bank;
 reg        load_prepare_target_was_active;
+reg        load_prepare_vector;
 reg        load_prepare_word;
+reg [1:0]  eng_step;
 reg [2:0]  load_prepare_register;
 reg [15:0] load_prepare_value;
 reg [15:0] load_prepare_ip;
@@ -226,27 +219,6 @@ reg  [15:0] load_ss;
 reg  [15:0] load_ip;
 reg  [15:0] load_flags;
 
-reg  [15:0] ss_load_ax;
-reg  [15:0] ss_load_cx;
-reg  [15:0] ss_load_dx;
-reg  [15:0] ss_load_bx;
-reg  [15:0] ss_load_sp;
-reg  [15:0] ss_load_bp;
-reg  [15:0] ss_load_si;
-reg  [15:0] ss_load_di;
-reg  [15:0] ss_load_cs;
-reg  [15:0] ss_load_ds;
-reg  [15:0] ss_load_es;
-reg  [15:0] ss_load_ss;
-reg  [15:0] ss_load_ip;
-reg  [15:0] ss_load_flags;
-reg         ss_load_halted;
-reg  [1:0]  ss_port_state;
-reg  [7:0]  ss_ram_index;
-reg  [2:0]  ss_byte_index;
-reg  [63:0] ss_ram_buffer;
-reg  [63:0] ss_ram_write_data;
-
 reg         ext_req;
 reg         ext_write;
 reg         ext_word;
@@ -267,34 +239,35 @@ reg  [19:0] txn_addr;
 reg  [15:0] txn_dout;
 reg  [15:0] txn_din;
 
+// Internal RAM port and its users: reset clear, bank-switch engine, the bus's
+// byte accesses, and a background read of the active bank's row A that keeps
+// the saved PSW and PC ready for RETRBI and MOVSPB.
+reg  [3:0]   iram_raddr;
+reg  [3:0]   iram_waddr;
+reg  [15:0]  iram_be;
+reg  [127:0] iram_wdata;
+wire [127:0] iram_q;
+wire         iram_we = |iram_be;
+reg          iram_we_d;
+reg  [1:0]   rd_tag;
+reg  [2:0]   ref_bank;
+reg  [4:0]   clr_cnt = 5'd0;
+reg          clr_reset_n_d = 1'b1;
+wire         clr_busy = !clr_cnt[4];
+reg  [1:0]   int_step;
+reg  [7:0]   int_rd0;
+reg  [7:0]   int_rd1;
+reg  [31:0]  psw_cache;
+reg  [2:0]   psw_bank;
+reg          psw_valid;
+wire         psw_ok = psw_valid && psw_bank == active_bank;
+
 wire escape_timing_done = escape_delay_count == 5'd0;
 wire base_arch_load = escape_timing_done &&
                       escape_state == ESC_LOAD_COMMIT &&
                       !load_prepare_pending;
-// The parent save-state controller emits a one-clock commit pulse. Register
-// and stretch it locally so the wide architectural restore bus is stable
-// across several capture edges instead of depending on one high-fanout edge.
-reg       ss_restore_load_pending = 1'b0;
-reg [2:0] ss_restore_load_count = 3'd0;
-always @(posedge clk) begin
-    if (reset) begin
-        ss_restore_load_pending <= 1'b0;
-        ss_restore_load_count <= 3'd0;
-    end else if (ss_restore_commit && ss_restore_enable) begin
-        ss_restore_load_pending <= 1'b1;
-        ss_restore_load_count <= 3'd0;
-    end else if (!reset_n) begin
-        ss_restore_load_count <= 3'd0;
-    end else if (ss_restore_load_pending) begin
-        ss_restore_load_pending <= 1'b0;
-        ss_restore_load_count <= 3'd4;
-    end else if (ss_restore_load_count != 3'd0) begin
-        ss_restore_load_count <= ss_restore_load_count - 3'd1;
-    end
-end
-wire ss_restore_load = ss_restore_load_count != 3'd0;
-wire cpu_arch_load = base_arch_load || ss_restore_load;
-wire cpu_clock_enable = clock_enable || ss_restore_load;
+wire cpu_arch_load = base_arch_load;
+wire cpu_clock_enable = clock_enable;
 wire bus_phase_advance = !BUS_PHASES_USE_CEN || clock_enable;
 wire txn_sound_write = txn_write &&
                        (txn_addr == 20'h00000 ||
@@ -365,9 +338,6 @@ wire base_instruction_start_hold =
 wire irq_entry_safe = instruction_idle && bus_state == BUS_IDLE &&
                       !cpu_rd && !cpu_wr && !ext_req &&
                       !interrupt_deferred;
-wire ss_selected = ss_select == SS_IDX;
-wire ss_state_write = ss_selected && ss_write;
-wire ss_ram_write_active = ss_port_state == SS_PORT_WRITE_RAM;
 assign escape_complete = escape_timing_done &&
                          (escape_state == ESC_FLAGS_COMMIT ||
                           escape_state == ESC_DONE_COMMIT ||
@@ -415,55 +385,50 @@ wire [8:0] int_index0 = txn_addr[8:0];
 wire [8:0] int_index1 = txn_addr[8:0] + 9'd1;
 wire int_write0 = bus_state == BUS_INTERNAL && txn_write;
 wire int_write1 = int_write0 && txn_word;
+wire eng_ram = load_prepare_pending &&
+               (load_prepare_mode == LOAD_PREP_BANK ||
+                load_prepare_mode == LOAD_PREP_STACK);
+wire int_go = bus_state == BUS_INTERNAL && !int_step[1] &&
+              !eng_ram && !clr_busy;
+wire [8:0] int_index_step = int_step[0] ? int_index1 : int_index0;
+wire int_step_ram = !int_index_step[8] && (!int_step[0] || txn_word);
+wire int_done = int_step == 2'd3;
 
-function automatic [15:0] stored_bank_word;
-    input [2:0] bank;
-    input [4:0] offset;
+function automatic [15:0] arch_bank_word;
+    input [3:0] word_index;
     begin
-        stored_bank_word = {
-            internal_ram[{bank, 5'b00000} + offset + 5'd1],
-            internal_ram[{bank, 5'b00000} + offset]
-        };
+        case (word_index)
+            4'h4: arch_bank_word = arch_ds;
+            4'h5: arch_bank_word = arch_ss;
+            4'h6: arch_bank_word = arch_cs;
+            4'h7: arch_bank_word = arch_es;
+            4'h8: arch_bank_word = arch_di;
+            4'h9: arch_bank_word = arch_si;
+            4'ha: arch_bank_word = arch_bp;
+            4'hb: arch_bank_word = arch_sp;
+            4'hc: arch_bank_word = arch_bx;
+            4'hd: arch_bank_word = arch_dx;
+            4'he: arch_bank_word = arch_cx;
+            default: arch_bank_word = arch_ax;
+        endcase
     end
 endfunction
 
-function automatic [15:0] live_bank_word;
-    input [2:0] bank;
-    input [4:0] offset;
-    begin
-        if (bank == active_bank) begin
-            case (offset)
-                5'h08: live_bank_word = arch_ds;
-                5'h0a: live_bank_word = arch_ss;
-                5'h0c: live_bank_word = arch_cs;
-                5'h0e: live_bank_word = arch_es;
-                5'h10: live_bank_word = arch_di;
-                5'h12: live_bank_word = arch_si;
-                5'h14: live_bank_word = arch_bp;
-                5'h16: live_bank_word = arch_sp;
-                5'h18: live_bank_word = arch_bx;
-                5'h1a: live_bank_word = arch_dx;
-                5'h1c: live_bank_word = arch_cx;
-                5'h1e: live_bank_word = arch_ax;
-                default: live_bank_word = stored_bank_word(bank, offset);
-            endcase
-        end else begin
-            live_bank_word = stored_bank_word(bank, offset);
-        end
-    end
-endfunction
-
+// The active bank's registers live in the CPU; a read of their bytes returns
+// the live value, every other internal RAM byte the stored one.
 function automatic [7:0] internal_read_byte;
     input [8:0] index;
-    reg [2:0] bank;
-    reg [4:0] offset;
+    input [7:0] ram_byte;
     reg [15:0] word_value;
     begin
         if (!index[8]) begin
-            bank = index[7:5];
-            offset = {index[4:1], 1'b0};
-            word_value = live_bank_word(bank, offset);
-            internal_read_byte = index[0] ? word_value[15:8] : word_value[7:0];
+            if (index[7:5] == active_bank && index[4:3] != 2'b00) begin
+                word_value = arch_bank_word(index[4:1]);
+                internal_read_byte = index[0] ? word_value[15:8] :
+                                                word_value[7:0];
+            end else begin
+                internal_read_byte = ram_byte;
+            end
         end else begin
             case (index)
                 9'h100: internal_read_byte = (p0_latch & ~pm0_reg) |
@@ -606,16 +571,6 @@ wire [15:0] escape_register_value = escape_is_word ?
                                       {8'h00, gpr8_read(escape_modrm[2:0])};
 wire [15:0] escape_bit_mask = 16'h0001 << escape_bit;
 
-task automatic store_word;
-    input [2:0] bank;
-    input [4:0] offset;
-    input [15:0] value;
-    begin
-        internal_ram[{bank, 5'b00000} + offset] <= value[7:0];
-        internal_ram[{bank, 5'b00000} + offset + 5'd1] <= value[15:8];
-    end
-endtask
-
 task automatic capture_arch_stage;
     begin
         arch_stage_ds <= arch_ds;
@@ -633,11 +588,14 @@ task automatic capture_arch_stage;
     end
 endtask
 
+// With vector_ip the new IP is the target bank's vector PC (offset 02),
+// read by the engine; otherwise next_ip.
 task automatic stage_bank_switch;
     input        write_return;
     input [2:0]  return_bank;
     input [15:0] return_psw;
     input [15:0] return_ip_value;
+    input        vector_ip;
     input [15:0] next_ip;
     input [15:0] next_flags;
     begin
@@ -652,6 +610,7 @@ task automatic stage_bank_switch;
         load_prepare_mode <= LOAD_PREP_BANK;
         load_prepare_bank <= return_bank;
         load_prepare_target_was_active <= return_bank == active_bank;
+        load_prepare_vector <= vector_ip;
         load_prepare_ip <= next_ip;
         load_prepare_flags <= next_flags;
     end
@@ -664,6 +623,7 @@ task automatic stage_register_load;
         capture_arch_stage();
         load_prepare_pending <= 1'b1;
         load_prepare_mode <= LOAD_PREP_REGISTER;
+        load_prepare_vector <= 1'b0;
         load_prepare_word <= escape_is_word;
         load_prepare_register <= escape_modrm[2:0];
         load_prepare_value <= value;
@@ -678,6 +638,7 @@ task automatic stage_push_load;
         capture_arch_stage();
         load_prepare_pending <= 1'b1;
         load_prepare_mode <= LOAD_PREP_PUSH;
+        load_prepare_vector <= 1'b0;
         load_prepare_value <= next_sp;
         load_prepare_ip <= arch_next_ip;
         load_prepare_flags <= arch_flags;
@@ -690,6 +651,7 @@ task automatic stage_stack_load;
         capture_arch_stage();
         load_prepare_pending <= 1'b1;
         load_prepare_mode <= LOAD_PREP_STACK;
+        load_prepare_vector <= 1'b0;
         load_prepare_bank <= bank;
         load_prepare_target_was_active <= bank == active_bank;
         load_prepare_ip <= arch_next_ip;
@@ -697,13 +659,13 @@ task automatic stage_stack_load;
     end
 endtask
 
+// Special function registers only; internal RAM bytes go through the RAM
+// port (int_step).
 task automatic apply_internal_write;
     input [8:0] index;
     input [7:0] value;
     begin
-        if (!index[8]) begin
-            internal_ram[index[7:0]] <= value;
-        end else begin
+        if (index[8]) begin
             case (index)
                 9'h100: p0_latch <= value;
                 9'h101: pm0_reg <= value;
@@ -739,145 +701,98 @@ task automatic apply_internal_write;
     end
 endtask
 
-// The V25 is frozen at state_idle before this port is used. Internal RAM is
-// transferred one byte per clock so save-state access does not synthesize
-// eight additional 256:1 read and write ports.
-always @(posedge clk) begin
-    ss_ack <= 1'b0;
-
-    if (!reset_n) begin
-        ss_data_out <= 64'd0;
-        ss_port_state <= SS_PORT_IDLE;
-        ss_ram_index <= 8'd0;
-        ss_byte_index <= 3'd0;
-        ss_ram_buffer <= 64'd0;
-        ss_ram_write_data <= 64'd0;
-    end else begin
-        case (ss_port_state)
-            SS_PORT_IDLE: begin
-                if (ss_selected) begin
-                    if (ss_query) begin
-                        ss_data_out <= {
-                            SS_IDX, 22'd0, 2'd3, SS_WORD_COUNT
-                        };
-                        ss_ack <= 1'b1;
-                    end else if (ss_read) begin
-                        if (ss_addr < 32'd7) begin
-                            case (ss_addr)
-                                32'd0: ss_data_out <= {
-                                    arch_bx, arch_dx, arch_cx, arch_ax
-                                };
-                                32'd1: ss_data_out <= {
-                                    arch_di, arch_si, arch_bp, arch_sp
-                                };
-                                32'd2: ss_data_out <= {
-                                    arch_ss, arch_es, arch_ds, arch_cs
-                                };
-                                32'd3: ss_data_out <= {
-                                    23'd0,
-                                    ramen,
-                                    1'b0,
-                                    irq_entry_pending,
-                                    timer2_pending,
-                                    fault_latch,
-                                    arch_halted,
-                                    active_bank,
-                                    arch_flags,
-                                    arch_next_ip
-                                };
-                                32'd4: ss_data_out <= {
-                                    pm2_reg,
-                                    pm1_reg,
-                                    pm0_reg,
-                                    p2_latch,
-                                    p1_latch,
-                                    p0_latch,
-                                    prc_reg,
-                                    idb_reg
-                                };
-                                32'd5: ss_data_out <= {
-                                    tmic1_reg,
-                                    tmic0_reg,
-                                    tmc1_reg,
-                                    tmc0_reg,
-                                    wtc_hi,
-                                    wtc_lo,
-                                    rfm_reg,
-                                    pmt_reg
-                                };
-                                32'd6: ss_data_out <= {
-                                    timer_count,
-                                    md1_reg,
-                                    ispr_reg,
-                                    tmic2_reg
-                                };
-                                default: ss_data_out <= 64'd0;
-                            endcase
-                            ss_ack <= 1'b1;
-                        end else if (ss_addr < SS_WORD_COUNT) begin
-                            ss_ram_index <=
-                                (ss_addr[5:0] - 6'd7) << 3;
-                            ss_byte_index <= 3'd0;
-                            ss_ram_buffer <= 64'd0;
-                            ss_port_state <= SS_PORT_READ_RAM;
-                        end else begin
-                            ss_data_out <= 64'd0;
-                            ss_ack <= 1'b1;
-                        end
-                    end else if (ss_write) begin
-                        if (ss_addr >= 32'd7 &&
-                            ss_addr < SS_WORD_COUNT) begin
-                            ss_ram_index <=
-                                (ss_addr[5:0] - 6'd7) << 3;
-                            ss_byte_index <= 3'd0;
-                            ss_ram_write_data <= ss_data;
-                            ss_port_state <= SS_PORT_WRITE_RAM;
-                        end else begin
-                            ss_ack <= 1'b1;
-                        end
-                    end
+// Internal RAM port. Priority: reset clear, bank-switch engine, bus access,
+// then the background read of the active bank's row A.
+always @(*) begin
+    iram_waddr = 4'd0;
+    iram_be = 16'h0000;
+    iram_wdata = 128'd0;
+    iram_raddr = {active_bank, 1'b0};
+    if (clr_busy) begin
+        // The reset state: zero, but bank 7's CS (offset 0c) ffff.
+        iram_waddr = clr_cnt[3:0];
+        iram_be = 16'hffff;
+        iram_wdata = clr_cnt[3:0] == 4'he ? {16'h0000, 16'hffff, 96'd0} :
+                                            128'd0;
+    end else if (eng_ram) begin
+        case (eng_step)
+            2'd0: begin
+                iram_raddr = {load_prepare_bank, 1'b0};
+                if (bank_commit_pending) begin
+                    iram_waddr = {bank_commit_source, 1'b1};
+                    iram_be = 16'hffff;
+                    iram_wdata = {arch_stage_ax, arch_stage_cx,
+                                  arch_stage_dx, arch_stage_bx,
+                                  arch_stage_sp, arch_stage_bp,
+                                  arch_stage_si, arch_stage_di};
                 end
             end
-
-            SS_PORT_READ_RAM: begin
-                if (ss_byte_index == 3'd7) begin
-                    ss_data_out <= {
-                        internal_ram[ss_ram_index],
-                        ss_ram_buffer[55:0]
-                    };
-                    ss_ack <= 1'b1;
-                    ss_port_state <= SS_PORT_WAIT_RELEASE;
-                end else begin
-                    ss_ram_buffer[ss_byte_index * 8 +: 8] <=
-                        internal_ram[ss_ram_index];
-                    ss_ram_index <= ss_ram_index + 8'd1;
-                    ss_byte_index <= ss_byte_index + 3'd1;
+            2'd1: begin
+                iram_raddr = {load_prepare_bank, 1'b1};
+                if (bank_commit_pending) begin
+                    iram_waddr = {bank_commit_source, 1'b0};
+                    iram_be = 16'hff00;
+                    iram_wdata = {arch_stage_es, arch_stage_cs,
+                                  arch_stage_ss, arch_stage_ds, 64'd0};
                 end
             end
-
-            SS_PORT_WRITE_RAM: begin
-                if (ss_byte_index == 3'd7) begin
-                    ss_ack <= 1'b1;
-                    ss_port_state <= SS_PORT_WAIT_RELEASE;
-                end else begin
-                    ss_ram_index <= ss_ram_index + 8'd1;
-                    ss_byte_index <= ss_byte_index + 3'd1;
-                end
-            end
-
-            SS_PORT_WAIT_RELEASE: begin
-                if (!(ss_read || ss_write || ss_query))
-                    ss_port_state <= SS_PORT_IDLE;
-            end
-
             default: begin
-                ss_port_state <= SS_PORT_IDLE;
-                ss_ram_index <= 8'd0;
-                ss_byte_index <= 3'd0;
-                ss_ram_buffer <= 64'd0;
-                ss_ram_write_data <= 64'd0;
+                if (bank_commit_pending && bank_commit_write_return) begin
+                    iram_waddr = {bank_commit_target, 1'b0};
+                    iram_be = 16'h00f0;
+                    iram_wdata = {64'd0, bank_commit_ip,
+                                  bank_commit_psw, 32'd0};
+                end
             end
         endcase
+    end else if (int_go) begin
+        iram_raddr = int_index_step[7:4];
+        if (txn_write && int_step_ram) begin
+            iram_waddr = int_index_step[7:4];
+            iram_be = 16'h0001 << int_index_step[3:0];
+            iram_wdata = {16{int_step[0] ? txn_dout[15:8] : txn_dout[7:0]}};
+        end
+    end
+end
+
+dogyuun_v25_iram u_iram (
+    .clk   (clk),
+    .raddr (iram_raddr),
+    .waddr (iram_waddr),
+    .be    (iram_be),
+    .wdata (iram_wdata),
+    .q     (iram_q)
+);
+
+always @(posedge clk) begin
+    clr_reset_n_d <= reset_n;
+    if (!reset_n && clr_reset_n_d)
+        clr_cnt <= 5'd0;
+    else if (clr_busy)
+        clr_cnt <= clr_cnt + 5'd1;
+
+    iram_we_d <= iram_we;
+    rd_tag <= RD_NONE;
+    if (!clr_busy && !eng_ram) begin
+        if (int_go)
+            rd_tag <= int_step[0] ? RD_BUS1 : RD_BUS0;
+        else if (bus_state != BUS_INTERNAL)
+            rd_tag <= RD_REF;
+    end
+    ref_bank <= active_bank;
+
+    case (rd_tag)
+        RD_BUS0: int_rd0 <= iram_q[int_index0[3:0] * 8 +: 8];
+        RD_BUS1: int_rd1 <= iram_q[int_index1[3:0] * 8 +: 8];
+        default: ;
+    endcase
+
+    if (!reset_n || iram_we || iram_we_d) begin
+        psw_valid <= 1'b0;
+    end else if (rd_tag == RD_REF) begin
+        psw_cache <= iram_q[63:32];
+        psw_bank <= ref_bank;
+        psw_valid <= 1'b1;
     end
 end
 
@@ -901,21 +816,21 @@ dogyuun_z8086 u_cpu (
     .fetch_hold             (base_fetch_hold),
     .instruction_start_hold (base_instruction_start_hold),
     .arch_load              (cpu_arch_load),
-    .arch_load_ax           (ss_restore_load ? ss_load_ax : load_ax),
-    .arch_load_cx           (ss_restore_load ? ss_load_cx : load_cx),
-    .arch_load_dx           (ss_restore_load ? ss_load_dx : load_dx),
-    .arch_load_bx           (ss_restore_load ? ss_load_bx : load_bx),
-    .arch_load_sp           (ss_restore_load ? ss_load_sp : load_sp),
-    .arch_load_bp           (ss_restore_load ? ss_load_bp : load_bp),
-    .arch_load_si           (ss_restore_load ? ss_load_si : load_si),
-    .arch_load_di           (ss_restore_load ? ss_load_di : load_di),
-    .arch_load_cs           (ss_restore_load ? ss_load_cs : load_cs),
-    .arch_load_ds           (ss_restore_load ? ss_load_ds : load_ds),
-    .arch_load_es           (ss_restore_load ? ss_load_es : load_es),
-    .arch_load_ss           (ss_restore_load ? ss_load_ss : load_ss),
-    .arch_load_ip           (ss_restore_load ? ss_load_ip : load_ip),
-    .arch_load_flags        (ss_restore_load ? ss_load_flags : load_flags),
-    .arch_load_halted       (ss_restore_load ? ss_load_halted : 1'b0),
+    .arch_load_ax           (load_ax),
+    .arch_load_cx           (load_cx),
+    .arch_load_dx           (load_dx),
+    .arch_load_bx           (load_bx),
+    .arch_load_sp           (load_sp),
+    .arch_load_bp           (load_bp),
+    .arch_load_si           (load_si),
+    .arch_load_di           (load_di),
+    .arch_load_cs           (load_cs),
+    .arch_load_ds           (load_ds),
+    .arch_load_es           (load_es),
+    .arch_load_ss           (load_ss),
+    .arch_load_ip           (load_ip),
+    .arch_load_flags        (load_flags),
+    .arch_load_halted       (1'b0),
     .arch_flags_write       (base_flags_write),
     .arch_flags_in          (commit_flags),
     .arch_ax                (arch_ax),
@@ -964,23 +879,12 @@ always @(posedge clk) begin
         txn_dout <= 16'h0000;
         txn_din <= 16'h0000;
         cpu_din <= 16'h0000;
-    end else if (ss_restore_load) begin
-        bus_state <= BUS_IDLE;
-        bus_wait_phase <= 5'd1;
-        txn_ext <= 1'b0;
-        txn_write <= 1'b0;
-        txn_word <= 1'b0;
-        txn_io <= 1'b0;
-        txn_internal <= 1'b0;
-        txn_phase <= 1'b0;
-        txn_addr <= 20'h00000;
-        txn_dout <= 16'h0000;
-        txn_din <= 16'h0000;
-        cpu_din <= 16'h0000;
+        int_step <= 2'd0;
     end else begin
         case (bus_state)
             BUS_IDLE: begin
                 txn_phase <= 1'b0;
+                int_step <= 2'd0;
                 if (ext_req) begin
                     txn_ext <= 1'b1;
                     txn_write <= ext_write;
@@ -1008,14 +912,20 @@ always @(posedge clk) begin
                 end
             end
             BUS_INTERNAL: begin
-                if (bus_phase_advance) begin
+                // Byte 0 then byte 1 through the RAM port, one clock each;
+                // done well before the V25's next enable.
+                if (int_go)
+                    int_step <= int_step + 2'd1;
+                else if (int_step == 2'd2)
+                    int_step <= 2'd3;
+                if (int_done && bus_phase_advance) begin
                     if (!txn_write) begin
-                        txn_din[7:0] <= internal_read_byte(int_index0);
+                        txn_din[7:0] <= internal_read_byte(int_index0, int_rd0);
                         txn_din[15:8] <= txn_word ?
-                                          internal_read_byte(int_index1) : 8'h00;
-                        cpu_din[7:0] <= internal_read_byte(int_index0);
+                            internal_read_byte(int_index1, int_rd1) : 8'h00;
+                        cpu_din[7:0] <= internal_read_byte(int_index0, int_rd0);
                         cpu_din[15:8] <= txn_word ?
-                                          internal_read_byte(int_index1) : 8'h00;
+                            internal_read_byte(int_index1, int_rd1) : 8'h00;
                     end
                     bus_state <= txn_ext ? BUS_ACK_EXT : BUS_ACK_CPU;
                 end
@@ -1071,7 +981,6 @@ always @(posedge clk) begin
     end
 end
 
-integer reset_index;
 reg [2:0] target_bank;
 reg [15:0] saved_psw;
 reg [15:0] return_ip;
@@ -1083,10 +992,6 @@ reg [15:0] data_segment;
 // V25 extension controller, register banks, SFR writes, and timer.
 always @(posedge clk) begin
     if (!reset_n) begin
-        for (reset_index = 0; reset_index < 256; reset_index = reset_index + 1)
-            internal_ram[reset_index] <= 8'h00;
-        internal_ram[8'hec] <= 8'hff;
-        internal_ram[8'hed] <= 8'hff;
         active_bank <= 3'd7;
         bank_commit_pending <= 1'b0;
         bank_commit_write_return <= 1'b0;
@@ -1110,7 +1015,9 @@ always @(posedge clk) begin
         load_prepare_mode <= LOAD_PREP_NONE;
         load_prepare_bank <= 3'd0;
         load_prepare_target_was_active <= 1'b0;
+        load_prepare_vector <= 1'b0;
         load_prepare_word <= 1'b0;
+        eng_step <= 2'd0;
         load_prepare_register <= 3'd0;
         load_prepare_value <= 16'h0000;
         load_prepare_ip <= 16'h0000;
@@ -1164,251 +1071,129 @@ always @(posedge clk) begin
         load_ss <= 16'h0000;
         load_ip <= 16'h0000;
         load_flags <= 16'hf002;
-        ss_load_ax <= 16'h0000;
-        ss_load_cx <= 16'h0000;
-        ss_load_dx <= 16'h0000;
-        ss_load_bx <= 16'h0000;
-        ss_load_sp <= 16'h0000;
-        ss_load_bp <= 16'h0000;
-        ss_load_si <= 16'h0000;
-        ss_load_di <= 16'h0000;
-        ss_load_cs <= 16'hffff;
-        ss_load_ds <= 16'h0000;
-        ss_load_es <= 16'h0000;
-        ss_load_ss <= 16'h0000;
-        ss_load_ip <= 16'h0000;
-        ss_load_flags <= 16'hf002;
-        ss_load_halted <= 1'b0;
-        ext_req <= 1'b0;
-        ext_write <= 1'b0;
-        ext_word <= 1'b0;
-        ext_addr <= 20'h00000;
-        ext_dout <= 16'h0000;
-    end else if (ss_ram_write_active) begin
-        if (ss_restore_enable) begin
-            internal_ram[ss_ram_index] <=
-                ss_ram_write_data[ss_byte_index * 8 +: 8];
-        end
-    end else if (ss_state_write && ss_restore_enable) begin
-        case (ss_addr)
-            32'd0: begin
-                ss_load_ax <= ss_data[15:0];
-                ss_load_cx <= ss_data[31:16];
-                ss_load_dx <= ss_data[47:32];
-                ss_load_bx <= ss_data[63:48];
-            end
-            32'd1: begin
-                ss_load_sp <= ss_data[15:0];
-                ss_load_bp <= ss_data[31:16];
-                ss_load_si <= ss_data[47:32];
-                ss_load_di <= ss_data[63:48];
-            end
-            32'd2: begin
-                ss_load_cs <= ss_data[15:0];
-                ss_load_ds <= ss_data[31:16];
-                ss_load_es <= ss_data[47:32];
-                ss_load_ss <= ss_data[63:48];
-            end
-            32'd3: begin
-                ss_load_ip <= ss_data[15:0];
-                ss_load_flags <= ss_data[31:16];
-                active_bank <= ss_data[34:32];
-                ss_load_halted <= ss_data[35];
-                fault_latch <= ss_data[36];
-                timer2_pending <= ss_data[37];
-                irq_entry_pending <= ss_data[38];
-                ramen <= ss_data[40];
-            end
-            32'd4: begin
-                idb_reg <= ss_data[7:0];
-                prc_reg <= ss_data[15:8];
-                p0_latch <= ss_data[23:16];
-                p1_latch <= ss_data[31:24];
-                p2_latch <= ss_data[39:32];
-                pm0_reg <= ss_data[47:40];
-                pm1_reg <= ss_data[55:48];
-                pm2_reg <= ss_data[63:56];
-            end
-            32'd5: begin
-                pmt_reg <= ss_data[7:0];
-                rfm_reg <= ss_data[15:8];
-                wtc_lo <= ss_data[23:16];
-                wtc_hi <= ss_data[31:24];
-                tmc0_reg <= ss_data[39:32];
-                tmc1_reg <= ss_data[47:40];
-                tmic0_reg <= ss_data[55:48];
-                tmic1_reg <= ss_data[63:56];
-            end
-            32'd6: begin
-                tmic2_reg <= ss_data[7:0];
-                ispr_reg <= ss_data[15:8];
-                md1_reg <= ss_data[31:16];
-                timer_count <= ss_data[63:32];
-            end
-            default: ;
-        endcase
-    end else if (ss_restore_load) begin
-        bank_commit_pending <= 1'b0;
-        bank_commit_write_return <= 1'b0;
-        load_prepare_pending <= 1'b0;
-        load_prepare_mode <= LOAD_PREP_NONE;
-        escape_state <= ESC_IDLE;
-        escape_delay_count <= 5'd0;
-        instruction_gap_count <= 5'd0;
-        escape_timing_profile <= 1'b0;
-        escape_opcode <= 8'h00;
-        escape_modrm <= 8'h00;
-        escape_disp <= 16'h0000;
-        escape_imm <= 8'h00;
-        escape_bit <= 4'd0;
-        escape_mem_value <= 16'h0000;
-        commit_flags <= ss_load_flags;
-        load_ax <= ss_load_ax;
-        load_cx <= ss_load_cx;
-        load_dx <= ss_load_dx;
-        load_bx <= ss_load_bx;
-        load_sp <= ss_load_sp;
-        load_bp <= ss_load_bp;
-        load_si <= ss_load_si;
-        load_di <= ss_load_di;
-        load_cs <= ss_load_cs;
-        load_ds <= ss_load_ds;
-        load_es <= ss_load_es;
-        load_ss <= ss_load_ss;
-        load_ip <= ss_load_ip;
-        load_flags <= ss_load_flags;
         ext_req <= 1'b0;
         ext_write <= 1'b0;
         ext_word <= 1'b0;
         ext_addr <= 20'h00000;
         ext_dout <= 16'h0000;
     end else begin
-        if (bank_commit_pending) begin
-            store_word(bank_commit_source, 5'h08, arch_stage_ds);
-            store_word(bank_commit_source, 5'h0a, arch_stage_ss);
-            store_word(bank_commit_source, 5'h0c, arch_stage_cs);
-            store_word(bank_commit_source, 5'h0e, arch_stage_es);
-            store_word(bank_commit_source, 5'h10, arch_stage_di);
-            store_word(bank_commit_source, 5'h12, arch_stage_si);
-            store_word(bank_commit_source, 5'h14, arch_stage_bp);
-            store_word(bank_commit_source, 5'h16, arch_stage_sp);
-            store_word(bank_commit_source, 5'h18, arch_stage_bx);
-            store_word(bank_commit_source, 5'h1a, arch_stage_dx);
-            store_word(bank_commit_source, 5'h1c, arch_stage_cx);
-            store_word(bank_commit_source, 5'h1e, arch_stage_ax);
-            if (bank_commit_write_return) begin
-                store_word(bank_commit_target, 5'h04, bank_commit_psw);
-                store_word(bank_commit_target, 5'h06, bank_commit_ip);
-            end
-            bank_commit_pending <= 1'b0;
-            bank_commit_write_return <= 1'b0;
-        end
-
+        // Engine step 0 loads what the staged registers give, as one clock
+        // did before; a bank switch or MOVSPB then takes the target bank's
+        // rows A and B from the RAM reads issued in steps 0 and 1.
         if (load_prepare_pending) begin
-            if (load_prepare_mode == LOAD_PREP_BANK &&
-                !load_prepare_target_was_active) begin
-                load_ax <= stored_bank_word(load_prepare_bank, 5'h1e);
-                load_cx <= stored_bank_word(load_prepare_bank, 5'h1c);
-                load_dx <= stored_bank_word(load_prepare_bank, 5'h1a);
-                load_bx <= stored_bank_word(load_prepare_bank, 5'h18);
-                load_sp <= stored_bank_word(load_prepare_bank, 5'h16);
-                load_bp <= stored_bank_word(load_prepare_bank, 5'h14);
-                load_si <= stored_bank_word(load_prepare_bank, 5'h12);
-                load_di <= stored_bank_word(load_prepare_bank, 5'h10);
-                load_cs <= stored_bank_word(load_prepare_bank, 5'h0c);
-                load_ds <= stored_bank_word(load_prepare_bank, 5'h08);
-                load_es <= stored_bank_word(load_prepare_bank, 5'h0e);
-                load_ss <= stored_bank_word(load_prepare_bank, 5'h0a);
-            end else begin
-                load_ax <= arch_stage_ax;
-                load_cx <= arch_stage_cx;
-                load_dx <= arch_stage_dx;
-                load_bx <= arch_stage_bx;
-                load_sp <= arch_stage_sp;
-                load_bp <= arch_stage_bp;
-                load_si <= arch_stage_si;
-                load_di <= arch_stage_di;
-                load_cs <= arch_stage_cs;
-                load_ds <= arch_stage_ds;
-                load_es <= arch_stage_es;
-                load_ss <= arch_stage_ss;
-            end
-            load_ip <= load_prepare_ip;
-            load_flags <= load_prepare_flags;
+            case (eng_step)
+                2'd0: begin
+                    load_ax <= arch_stage_ax;
+                    load_cx <= arch_stage_cx;
+                    load_dx <= arch_stage_dx;
+                    load_bx <= arch_stage_bx;
+                    load_sp <= arch_stage_sp;
+                    load_bp <= arch_stage_bp;
+                    load_si <= arch_stage_si;
+                    load_di <= arch_stage_di;
+                    load_cs <= arch_stage_cs;
+                    load_ds <= arch_stage_ds;
+                    load_es <= arch_stage_es;
+                    load_ss <= arch_stage_ss;
+                    load_ip <= load_prepare_ip;
+                    load_flags <= load_prepare_flags;
 
-            case (load_prepare_mode)
-                LOAD_PREP_REGISTER: begin
-                    if (load_prepare_word) begin
-                        case (load_prepare_register)
-                            3'd0: load_ax <= load_prepare_value;
-                            3'd1: load_cx <= load_prepare_value;
-                            3'd2: load_dx <= load_prepare_value;
-                            3'd3: load_bx <= load_prepare_value;
-                            3'd4: load_sp <= load_prepare_value;
-                            3'd5: load_bp <= load_prepare_value;
-                            3'd6: load_si <= load_prepare_value;
-                            3'd7: load_di <= load_prepare_value;
-                        endcase
+                    case (load_prepare_mode)
+                        LOAD_PREP_REGISTER: begin
+                            if (load_prepare_word) begin
+                                case (load_prepare_register)
+                                    3'd0: load_ax <= load_prepare_value;
+                                    3'd1: load_cx <= load_prepare_value;
+                                    3'd2: load_dx <= load_prepare_value;
+                                    3'd3: load_bx <= load_prepare_value;
+                                    3'd4: load_sp <= load_prepare_value;
+                                    3'd5: load_bp <= load_prepare_value;
+                                    3'd6: load_si <= load_prepare_value;
+                                    3'd7: load_di <= load_prepare_value;
+                                endcase
+                            end else begin
+                                case (load_prepare_register)
+                                    3'd0: load_ax <= {
+                                        arch_stage_ax[15:8],
+                                        load_prepare_value[7:0]
+                                    };
+                                    3'd1: load_cx <= {
+                                        arch_stage_cx[15:8],
+                                        load_prepare_value[7:0]
+                                    };
+                                    3'd2: load_dx <= {
+                                        arch_stage_dx[15:8],
+                                        load_prepare_value[7:0]
+                                    };
+                                    3'd3: load_bx <= {
+                                        arch_stage_bx[15:8],
+                                        load_prepare_value[7:0]
+                                    };
+                                    3'd4: load_ax <= {
+                                        load_prepare_value[7:0],
+                                        arch_stage_ax[7:0]
+                                    };
+                                    3'd5: load_cx <= {
+                                        load_prepare_value[7:0],
+                                        arch_stage_cx[7:0]
+                                    };
+                                    3'd6: load_dx <= {
+                                        load_prepare_value[7:0],
+                                        arch_stage_dx[7:0]
+                                    };
+                                    3'd7: load_bx <= {
+                                        load_prepare_value[7:0],
+                                        arch_stage_bx[7:0]
+                                    };
+                                endcase
+                            end
+                        end
+
+                        LOAD_PREP_PUSH:
+                            load_sp <= load_prepare_value;
+
+                        default: ;
+                    endcase
+
+                    if (eng_ram) begin
+                        eng_step <= 2'd1;
                     end else begin
-                        case (load_prepare_register)
-                            3'd0: load_ax <= {
-                                arch_stage_ax[15:8],
-                                load_prepare_value[7:0]
-                            };
-                            3'd1: load_cx <= {
-                                arch_stage_cx[15:8],
-                                load_prepare_value[7:0]
-                            };
-                            3'd2: load_dx <= {
-                                arch_stage_dx[15:8],
-                                load_prepare_value[7:0]
-                            };
-                            3'd3: load_bx <= {
-                                arch_stage_bx[15:8],
-                                load_prepare_value[7:0]
-                            };
-                            3'd4: load_ax <= {
-                                load_prepare_value[7:0],
-                                arch_stage_ax[7:0]
-                            };
-                            3'd5: load_cx <= {
-                                load_prepare_value[7:0],
-                                arch_stage_cx[7:0]
-                            };
-                            3'd6: load_dx <= {
-                                load_prepare_value[7:0],
-                                arch_stage_dx[7:0]
-                            };
-                            3'd7: load_bx <= {
-                                load_prepare_value[7:0],
-                                arch_stage_bx[7:0]
-                            };
-                        endcase
+                        load_prepare_pending <= 1'b0;
+                        load_prepare_mode <= LOAD_PREP_NONE;
                     end
                 end
 
-                LOAD_PREP_PUSH:
-                    load_sp <= load_prepare_value;
-
-                LOAD_PREP_STACK: begin
-                    if (load_prepare_target_was_active) begin
-                        load_ss <= arch_stage_ss;
-                        load_sp <= arch_stage_sp;
-                    end else begin
-                        load_ss <= stored_bank_word(
-                            load_prepare_bank, 5'h0a
-                        );
-                        load_sp <= stored_bank_word(
-                            load_prepare_bank, 5'h16
-                        );
+                2'd1: begin
+                    // Row A of the target bank.
+                    if (!load_prepare_target_was_active) begin
+                        if (load_prepare_mode == LOAD_PREP_BANK)
+                            {load_es, load_cs, load_ss, load_ds} <=
+                                iram_q[127:64];
+                        else
+                            load_ss <= iram_q[95:80];
                     end
+                    if (load_prepare_vector)
+                        load_ip <= iram_q[31:16];
+                    eng_step <= 2'd2;
                 end
 
-                default: ;
+                default: begin
+                    // Row B of the target bank; the return PSW and PC are
+                    // written this clock.
+                    if (!load_prepare_target_was_active) begin
+                        if (load_prepare_mode == LOAD_PREP_BANK)
+                            {load_ax, load_cx, load_dx, load_bx,
+                             load_sp, load_bp, load_si, load_di} <= iram_q;
+                        else
+                            load_sp <= iram_q[63:48];
+                    end
+                    eng_step <= 2'd0;
+                    bank_commit_pending <= 1'b0;
+                    bank_commit_write_return <= 1'b0;
+                    load_prepare_pending <= 1'b0;
+                    load_prepare_mode <= LOAD_PREP_NONE;
+                end
             endcase
-
-            load_prepare_pending <= 1'b0;
-            load_prepare_mode <= LOAD_PREP_NONE;
         end
 
         if (clock_enable && tmc1_reg[7] && md1_reg != 16'h0000) begin
@@ -1471,7 +1256,8 @@ always @(posedge clk) begin
                             target_bank,
                             saved_psw,
                             arch_next_ip,
-                            live_bank_word(target_bank, 5'h02),
+                            1'b1,
+                            16'h0000,
                             (saved_psw & 16'hfcff & 16'h8fff) |
                             {1'b0, target_bank, 12'h000}
                         );
@@ -1612,24 +1398,32 @@ always @(posedge clk) begin
                             escape_state <= ESC_LOAD_COMMIT;
                         end
                     end else if (escape_opcode == 8'h25) begin
-                        saved_psw = live_bank_word(active_bank, 5'h04);
-                        target_bank = saved_psw[14:12];
-                        stage_stack_load(target_bank);
-                        escape_state <= ESC_LOAD_COMMIT;
+                        // MOVSPB: the saved PSW (offset 04) comes from the
+                        // background read; wait an enable if it is stale.
+                        if (psw_ok) begin
+                            saved_psw = psw_cache[15:0];
+                            target_bank = saved_psw[14:12];
+                            stage_stack_load(target_bank);
+                            escape_state <= ESC_LOAD_COMMIT;
+                        end
                     end else if (escape_opcode == 8'h91) begin
-                        saved_psw = live_bank_word(active_bank, 5'h04);
-                        return_ip = live_bank_word(active_bank, 5'h06);
-                        target_bank = saved_psw[14:12];
-                        stage_bank_switch(
-                            1'b0,
-                            target_bank,
-                            16'h0000,
-                            16'h0000,
-                            return_ip,
-                            saved_psw
-                        );
-                        active_bank <= target_bank;
-                        escape_state <= ESC_LOAD_COMMIT;
+                        // RETRBI: saved PSW and PC (offsets 04, 06), likewise.
+                        if (psw_ok) begin
+                            saved_psw = psw_cache[15:0];
+                            return_ip = psw_cache[31:16];
+                            target_bank = saved_psw[14:12];
+                            stage_bank_switch(
+                                1'b0,
+                                target_bank,
+                                16'h0000,
+                                16'h0000,
+                                1'b0,
+                                return_ip,
+                                saved_psw
+                            );
+                            active_bank <= target_bank;
+                            escape_state <= ESC_LOAD_COMMIT;
+                        end
                     end else if (escape_opcode == 8'h92) begin
                         if (ispr_reg[0]) ispr_reg[0] <= 1'b0;
                         else if (ispr_reg[1]) ispr_reg[1] <= 1'b0;
@@ -1655,7 +1449,8 @@ always @(posedge clk) begin
                                 target_bank,
                                 saved_psw,
                                 arch_next_ip,
-                                live_bank_word(target_bank, 5'h02),
+                                1'b1,
+                                16'h0000,
                                 (saved_psw & 16'h8cff) |
                                 {1'b0, target_bank, 12'h000}
                             );
@@ -1791,100 +1586,31 @@ always @(posedge clk) begin
     end
 end
 
-`ifdef DOGYUUN_V25_TRACE
-wire debug_ext_write_start =
-    reset_n && bus_state == BUS_IDLE && ext_req && ext_write &&
-    !internal_selected(ext_addr, 1'b1);
-wire debug_cpu_write_start =
-    reset_n && bus_state == BUS_IDLE && !ext_req &&
-    cpu_wr && !cpu_io && !internal_selected(cpu_addr, cpu_data_cycle);
-wire debug_bus_write_start =
-    debug_ext_write_start || debug_cpu_write_start;
-wire [19:0] debug_bus_write_addr =
-    debug_ext_write_start ? ext_addr : cpu_addr;
-wire [7:0] debug_bus_write_data =
-    debug_ext_write_start ? ext_dout[7:0] : cpu_dout[7:0];
+endmodule
 
-wire debug_timer_bank_start =
-    clock_enable && escape_delay_count == 5'd0 &&
-    escape_state == ESC_IDLE && !escape_active &&
-    irq_entry_pending && timer2_irq_request && irq_entry_safe;
-wire debug_retrbi_bank_start =
-    clock_enable && escape_delay_count == 5'd0 &&
-    escape_state == ESC_PREPARE && escape_opcode == 8'h91;
-wire debug_brkcs_bank_start =
-    clock_enable && escape_delay_count == 5'd0 &&
-    escape_state == ESC_PREPARE && escape_opcode == 8'h2d &&
-    escape_modrm[7:6] == 2'b11;
+// The internal RAM: 16 rows of 16 bytes, written a byte lane at a time,
+// read one row a clock (registered address), one small RAM a lane. Quartus
+// 21.1 puts each lane in its own M10K (16 blocks for 2 Kbit) and takes no
+// ramstyle "MLAB" here, on the RAM or on the module.
+module dogyuun_v25_iram (
+    input              clk,
+    input      [3:0]   raddr,
+    input      [3:0]   waddr,
+    input      [15:0]  be,
+    input      [127:0] wdata,
+    output     [127:0] q
+);
 
-reg [2:0] debug_bank_cause;
-always @(posedge clk) begin
-    if (!reset_n || ss_restore_load) begin
-        debug_bank_cause <= 3'd0;
-    end else if (debug_timer_bank_start) begin
-        debug_bank_cause <= 3'd1;
-    end else if (debug_retrbi_bank_start) begin
-        debug_bank_cause <= 3'd2;
-    end else if (debug_brkcs_bank_start) begin
-        debug_bank_cause <= 3'd3;
+genvar lane;
+generate for (lane = 0; lane < 16; lane = lane + 1) begin : g_lane
+    reg [7:0] ram [0:15];
+    reg [7:0] lane_q;
+    always @(posedge clk) begin
+        if (be[lane])
+            ram[waddr] <= wdata[lane*8 +: 8];
+        lane_q <= ram[raddr];
     end
-end
-
-wire [15:0] debug_bank_psw =
-    debug_bank_cause == 3'd2 ? load_prepare_flags : bank_commit_psw;
-wire [15:0] debug_bank_ip =
-    debug_bank_cause == 3'd2 ? load_prepare_ip : bank_commit_ip;
-wire debug_restore_event =
-    ss_restore_load && ss_restore_load_count == 3'd4;
-
-wire [31:0] v25_debug_source;
-wire [127:0] v25_debug_probe;
-
-dogyuun_v25_debug_trace u_v25_debug_trace (
-    .clk                 (clk),
-    .reset_n             (reset_n),
-    .clock_enable        (clock_enable),
-    .instruction_done    (instruction_done),
-    .debug_pc            (instruction_next_pc),
-    .active_bank         (active_bank),
-    .arch_flags          (arch_flags),
-    .arch_cx             (arch_cx),
-    .arch_ix             (arch_si),
-    .halted              (arch_halted),
-    .fault               (fault_latch),
-    .timer2_pending      (timer2_pending),
-    .timer2_irq_request  (timer2_irq_request),
-    .irq_entry_pending   (irq_entry_pending),
-    .tmic0_reg           (tmic0_reg),
-    .ispr_reg            (ispr_reg),
-    .escape_state        (escape_state),
-    .escape_opcode       (escape_opcode),
-    .bus_write_start     (debug_bus_write_start),
-    .bus_write_addr      (debug_bus_write_addr),
-    .bus_write_data      (debug_bus_write_data),
-    .bank_commit         (bank_commit_pending),
-    .bank_cause          (debug_bank_cause),
-    .bank_source         (bank_commit_source),
-    .bank_target         (bank_commit_target),
-    .bank_psw            (debug_bank_psw),
-    .bank_ip             (debug_bank_ip),
-    .restore_event       (debug_restore_event),
-    .control             (v25_debug_source),
-    .probe               (v25_debug_probe)
-);
-
-altsource_probe #(
-    .sld_auto_instance_index ("NO"),
-    .sld_instance_index      (0),
-    .instance_id             ("V25D"),
-    .probe_width             (128),
-    .source_width            (32),
-    .source_initial_value    ("00000000"),
-    .enable_metastability    ("NO")
-) u_v25_debug_jtag (
-    .probe  (v25_debug_probe),
-    .source (v25_debug_source)
-);
-`endif
+    assign q[lane*8 +: 8] = lane_q;
+end endgenerate
 
 endmodule

@@ -1,11 +1,6 @@
 // GP9001 CPU-facing register and VRAM behavior used by both Dogyuun VDPs.
 // Objects use a vblank-frozen bank; the game wrapper freezes tile/scroll state.
-module dogyuun_gp9001_cpu #(
-    parameter [7:0] SS_RAM_IDX = 8'd0,
-    parameter [7:0] SS_REG_IDX = 8'd0,
-    parameter [7:0] SS_OBJ0_IDX = 8'd0,
-    parameter [7:0] SS_OBJ1_IDX = 8'd0
-) (
+module dogyuun_gp9001_cpu (
     input              clk,
     input              rst,
 
@@ -33,18 +28,7 @@ module dogyuun_gp9001_cpu #(
     output     [127:0] scrolls,
     output     [7:0]   scroll_flip,
     output reg         vram_write,
-    output reg         scroll_write,
-
-    input              ss_hold,
-    input              ss_restore_enable,
-    input      [63:0]  ss_data,
-    input      [31:0]  ss_addr,
-    input      [7:0]   ss_select,
-    input              ss_write,
-    input              ss_read,
-    input              ss_query,
-    output     [63:0]  ss_data_out,
-    output             ss_ack
+    output reg         scroll_write
 );
 
 localparam [2:0] ST_IDLE     = 3'd0;
@@ -88,8 +72,6 @@ reg [1:0]   obj_sync_state = OBJ_SYNC_IDLE;
 reg [9:0]   obj_sync_index = 10'd0;
 reg [15:0]  obj_sync_data = 16'd0;
 reg         obj_sync_start_pending = 1'b0;
-reg         obj_restore_pending = 1'b0;
-reg [1:0]   obj_restore_flags = 2'b00;
 reg [1023:0] obj_staging_dirty_lo = 1024'd0;
 reg [1023:0] obj_staging_dirty_hi = 1024'd0;
 
@@ -136,27 +118,6 @@ wire [15:0] obj_bank1_scan_dout;
 wire [15:0] obj_active_copy_dout = obj_active_bank ?
                                    obj_bank1_copy_dout : obj_bank0_copy_dout;
 
-wire ss_reg_selected = ss_select == SS_REG_IDX;
-wire ss_reg_access = ss_reg_selected && !ss_query &&
-                     (ss_read || ss_write);
-wire ss_reg_restore_write = ss_reg_access && ss_write &&
-                            ss_restore_enable;
-reg [63:0] ss_reg_data_out = 64'd0;
-reg        ss_reg_ack = 1'b0;
-wire [63:0] ss_ram_data_out;
-wire [63:0] ss_obj0_data_out;
-wire [63:0] ss_obj1_data_out;
-wire        ss_ram_ack;
-wire        ss_obj0_ack;
-wire        ss_obj1_ack;
-
-assign ss_ack = ss_reg_ack || ss_ram_ack || ss_obj0_ack || ss_obj1_ack;
-assign ss_data_out = ss_reg_ack ? ss_reg_data_out :
-                     ss_ram_ack ? ss_ram_data_out :
-                     ss_obj0_ack ? ss_obj0_data_out :
-                     ss_obj1_ack ? ss_obj1_data_out :
-                     64'd0;
-
 assign obj_scan_dout = obj_active_bank ?
                        obj_bank1_scan_dout : obj_bank0_scan_dout;
 assign obj_buf_busy = obj_init_active || obj_sync_start_pending ||
@@ -192,71 +153,6 @@ assign scrolls = {
 };
 assign scroll_flip = flip_reg;
 
-// Register chunk: pointer, selector, eight scroll registers, then flip and
-// object-bank ownership. Transient request/copy state is idle at quiesce.
-always @(posedge clk) begin
-    ss_reg_ack <= 1'b0;
-
-    if (ss_reg_selected && ss_query) begin
-        ss_reg_data_out <= {SS_REG_IDX, 22'd0, 2'd1, 32'd11};
-        ss_reg_ack <= 1'b1;
-    end else if (ss_reg_access) begin
-        if (ss_write) begin
-            ss_reg_ack <= 1'b1;
-        end else if (ss_addr == 32'd0) begin
-            ss_reg_data_out <= {48'd0, 3'd0, ptr};
-            ss_reg_ack <= 1'b1;
-        end else if (ss_addr == 32'd1) begin
-            ss_reg_data_out <= {56'd0, scroll_select};
-            ss_reg_ack <= 1'b1;
-        end else if (ss_addr < 32'd10) begin
-            ss_reg_data_out <= {
-                48'd0,
-                scroll_reg[ss_addr[2:0] - 3'd2]
-            };
-            ss_reg_ack <= 1'b1;
-        end else begin
-            ss_reg_data_out <= {
-                54'd0,
-                obj_snapshot_valid,
-                obj_active_bank,
-                flip_reg
-            };
-            ss_reg_ack <= 1'b1;
-        end
-    end
-end
-
-wire [12:0] ss_vram_addr;
-wire [15:0] ss_vram_data;
-wire [1:0]  ss_vram_we;
-
-dogyuun_ss_ram_port #(
-    .WIDTH        (16),
-    .ADDR_WIDTH   (13),
-    .WE_WIDTH     (2),
-    .SS_IDX       (SS_RAM_IDX),
-    .STREAM_WIDTH (2'd1)
-) u_vram_ss (
-    .clk            (clk),
-    .restore_enable (ss_restore_enable),
-    .normal_we      (2'b00),
-    .normal_addr    (scan_addr_mirrored),
-    .normal_data    (16'd0),
-    .ram_we         (ss_vram_we),
-    .ram_addr       (ss_vram_addr),
-    .ram_data       (ss_vram_data),
-    .ram_q          (scan_dout),
-    .ss_data        (ss_data),
-    .ss_addr        (ss_addr),
-    .ss_select      (ss_select),
-    .ss_write       (ss_write),
-    .ss_read        (ss_read),
-    .ss_query       (ss_query),
-    .ss_data_out    (ss_ram_data_out),
-    .ss_ack         (ss_ram_ack)
-);
-
 jtframe_dual_ram16 #(.AW(13)) u_vram (
     .clk0  (clk),
     .data0 (ram_din),
@@ -264,40 +160,10 @@ jtframe_dual_ram16 #(.AW(13)) u_vram (
     .we0   (ram_we),
     .q0    (ram_dout),
     .clk1  (clk),
-    .data1 (ss_vram_data),
-    .addr1 (ss_vram_addr),
-    .we1   (ss_vram_we),
+    .data1 (16'h0000),
+    .addr1 (scan_addr_mirrored),
+    .we1   (2'b00),
     .q1    (scan_dout)
-);
-
-wire [9:0]  ss_obj0_addr;
-wire [15:0] ss_obj0_data;
-wire [1:0]  ss_obj0_we;
-
-dogyuun_ss_ram_port #(
-    .WIDTH        (16),
-    .ADDR_WIDTH   (10),
-    .WE_WIDTH     (2),
-    .SS_IDX       (SS_OBJ0_IDX),
-    .STREAM_WIDTH (2'd1)
-) u_obj0_ss (
-    .clk            (clk),
-    .restore_enable (ss_restore_enable),
-    .normal_we      (2'b00),
-    .normal_addr    (obj_scan_addr),
-    .normal_data    (16'd0),
-    .ram_we         (ss_obj0_we),
-    .ram_addr       (ss_obj0_addr),
-    .ram_data       (ss_obj0_data),
-    .ram_q          (obj_bank0_scan_dout),
-    .ss_data        (ss_data),
-    .ss_addr        (ss_addr),
-    .ss_select      (ss_select),
-    .ss_write       (ss_write),
-    .ss_read        (ss_read),
-    .ss_query       (ss_query),
-    .ss_data_out    (ss_obj0_data_out),
-    .ss_ack         (ss_obj0_ack)
 );
 
 jtframe_dual_ram16 #(.AW(10)) u_obj_bank0 (
@@ -307,40 +173,10 @@ jtframe_dual_ram16 #(.AW(10)) u_obj_bank0 (
     .we0   (obj_bank0_we),
     .q0    (obj_bank0_copy_dout),
     .clk1  (clk),
-    .data1 (ss_obj0_data),
-    .addr1 (ss_obj0_addr),
-    .we1   (ss_obj0_we),
+    .data1 (16'h0000),
+    .addr1 (obj_scan_addr),
+    .we1   (2'b00),
     .q1    (obj_bank0_scan_dout)
-);
-
-wire [9:0]  ss_obj1_addr;
-wire [15:0] ss_obj1_data;
-wire [1:0]  ss_obj1_we;
-
-dogyuun_ss_ram_port #(
-    .WIDTH        (16),
-    .ADDR_WIDTH   (10),
-    .WE_WIDTH     (2),
-    .SS_IDX       (SS_OBJ1_IDX),
-    .STREAM_WIDTH (2'd1)
-) u_obj1_ss (
-    .clk            (clk),
-    .restore_enable (ss_restore_enable),
-    .normal_we      (2'b00),
-    .normal_addr    (obj_scan_addr),
-    .normal_data    (16'd0),
-    .ram_we         (ss_obj1_we),
-    .ram_addr       (ss_obj1_addr),
-    .ram_data       (ss_obj1_data),
-    .ram_q          (obj_bank1_scan_dout),
-    .ss_data        (ss_data),
-    .ss_addr        (ss_addr),
-    .ss_select      (ss_select),
-    .ss_write       (ss_write),
-    .ss_read        (ss_read),
-    .ss_query       (ss_query),
-    .ss_data_out    (ss_obj1_data_out),
-    .ss_ack         (ss_obj1_ack)
 );
 
 jtframe_dual_ram16 #(.AW(10)) u_obj_bank1 (
@@ -350,9 +186,9 @@ jtframe_dual_ram16 #(.AW(10)) u_obj_bank1 (
     .we0   (obj_bank1_we),
     .q0    (obj_bank1_copy_dout),
     .clk1  (clk),
-    .data1 (ss_obj1_data),
-    .addr1 (ss_obj1_addr),
-    .we1   (ss_obj1_we),
+    .data1 (16'h0000),
+    .addr1 (obj_scan_addr),
+    .we1   (2'b00),
     .q1    (obj_bank1_scan_dout)
 );
 
@@ -369,28 +205,10 @@ always @(posedge clk) begin
         obj_sync_index <= 10'd0;
         obj_sync_data <= 16'd0;
         obj_sync_start_pending <= 1'b0;
-        obj_restore_pending <= 1'b0;
-        obj_restore_flags <= 2'b00;
         obj_buf_miss <= 1'b0;
         obj_staging_dirty_lo <= 1024'd0;
         obj_staging_dirty_hi <= 1024'd0;
-    end else if (ss_reg_restore_write && (ss_addr == 32'd10)) begin
-        obj_restore_pending <= 1'b1;
-        obj_restore_flags <= ss_data[9:8];
-    end else if (obj_restore_pending) begin
-        obj_active_bank <= obj_restore_flags[0];
-        obj_snapshot_valid <= obj_restore_flags[1];
-        obj_init_active <= 1'b0;
-        obj_init_index <= 10'd0;
-        obj_sync_state <= OBJ_SYNC_IDLE;
-        obj_sync_index <= 10'd0;
-        obj_sync_data <= 16'd0;
-        obj_sync_start_pending <= 1'b0;
-        obj_restore_pending <= 1'b0;
-        obj_buf_miss <= 1'b0;
-        obj_staging_dirty_lo <= 1024'd0;
-        obj_staging_dirty_hi <= 1024'd0;
-    end else if (!ss_hold) begin
+    end else begin
         obj_buf_miss <= 1'b0;
 
         if (obj_buf_start) begin
@@ -479,18 +297,7 @@ always @(posedge clk) begin
         dout <= 16'hffff;
         for (i = 0; i < 8; i = i + 1)
             scroll_reg[i] <= 16'd0;
-    end else if (ss_reg_restore_write && (ss_addr < 32'd11)) begin
-        state <= ST_IDLE;
-        busy <= 1'b0;
-        if (ss_addr == 32'd0)
-            ptr <= ss_data[12:0];
-        else if (ss_addr == 32'd1)
-            scroll_select <= ss_data[7:0];
-        else if (ss_addr < 32'd10)
-            scroll_reg[ss_addr[2:0] - 3'd2] <= ss_data[15:0];
-        else
-            flip_reg <= ss_data[7:0];
-    end else if (!ss_hold) begin
+    end else begin
         case (state)
             ST_IDLE: begin
                 if (start && !busy) begin

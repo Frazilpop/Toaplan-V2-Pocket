@@ -1,5 +1,8 @@
 // Exact MC68000 word-bus decode for the Dogyuun parent board map.
-module dogyuun_main_decode (
+// Work RAM at 100000 is 2^WRAM_AW words: 16 KB on TP-022, 64 KB on TP-030.
+module dogyuun_main_decode #(
+    parameter integer WRAM_AW = 13
+) (
     input      [23:0] addr,
     input             bus_active,
     input             rw,
@@ -27,7 +30,8 @@ wire read_cycle = bus_active && rw;
 assign rom_cs        = bus_active && (addr < 24'h080000);
 assign rom_read_cs   = rom_cs && rw;
 assign wram_cs       = bus_active &&
-                       (addr >= 24'h100000) && (addr < 24'h104000);
+                       (addr >= 24'h100000) &&
+                       (addr < 24'h100000 + (24'd2 << WRAM_AW));
 assign in1_cs        = read_cycle &&
                        ((addr & 24'hfffffe) == 24'h200010);
 assign in2_cs        = read_cycle &&
