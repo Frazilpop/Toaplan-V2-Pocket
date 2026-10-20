@@ -101,7 +101,16 @@ module dogyuun_game #(
     output     [5:0]   snd_vu,
     output             snd_peak,
 
-    input      [3:0]   gfx_en
+    input      [3:0]   gfx_en,
+
+    // The Pocket shell's diagnostic overlay
+    output             dbg_cfg_valid,      // the image header read, magic good
+    output             dbg_loader_error,   // a byte outside every region, or overrun
+    output             dbg_v25_run,        // the V25 out of reset
+    output             dbg_v25_fault,
+    output     [3:0]   dbg_deadline_miss,  // a line engine missed its line (pulses)
+    output             dbg_oki_busy,       // an OKI channel playing
+    output     [19:0]  dbg_v25_pc
 );
 
 localparam [9:0] H_TOTAL = 10'd432;
@@ -346,6 +355,14 @@ dogyuun_gfx_repack u_gp1_object_repack (
 // Dogyuun has no framework-level flip output. Keep the rotation polarity
 // deterministic; the game's own Flip Screen DIP remains in dipsw[1].
 assign dip_flip = 1'b0;
+assign dbg_cfg_valid     = cfg_valid;
+assign dbg_loader_error  = loader_range_error | loader_overflow_error;
+assign dbg_v25_run       = sound_debug_v25_reset_n;
+assign dbg_v25_fault     = sound_debug_fault;
+assign dbg_deadline_miss = video_deadline_miss;
+assign dbg_oki_busy      = |sound_debug_oki_status[3:0];
+assign dbg_v25_pc        = sound_debug_pc;
+
 assign snd_left = sound_mono;
 assign snd_right = sound_mono;
 assign sample = sound_sample;

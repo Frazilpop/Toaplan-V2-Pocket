@@ -546,26 +546,26 @@ function automatic [7:0] gpr8_read;
 endfunction
 
 function automatic [15:0] ea_base;
-    input [2:0] code;
+    input [7:0] modrm;
     begin
-        case (code)
+        case (modrm[2:0])
             3'd0: ea_base = arch_bx + arch_si;
             3'd1: ea_base = arch_bx + arch_di;
             3'd2: ea_base = arch_bp + arch_si;
             3'd3: ea_base = arch_bp + arch_di;
             3'd4: ea_base = arch_si;
             3'd5: ea_base = arch_di;
-            3'd6: ea_base = escape_modrm[7:6] == 2'b00 ? 16'h0000 : arch_bp;
+            3'd6: ea_base = modrm[7:6] == 2'b00 ? 16'h0000 : arch_bp;
             default: ea_base = arch_bx;
         endcase
     end
 endfunction
 
 function automatic ea_defaults_ss;
-    input [2:0] code;
+    input [7:0] modrm;
     begin
-        ea_defaults_ss = code == 3'd2 || code == 3'd3 ||
-                         (code == 3'd6 && escape_modrm[7:6] != 2'b00);
+        ea_defaults_ss = modrm[2:0] == 3'd2 || modrm[2:0] == 3'd3 ||
+                         (modrm[2:0] == 3'd6 && modrm[7:6] != 2'b00);
     end
 endfunction
 
@@ -1009,6 +1009,20 @@ reg [15:0] operation_value;
 reg [15:0] operation_result;
 reg [4:0] operation_count;
 reg [15:0] data_segment;
+
+// The escape's effective-address base and default segment, registered a
+// clock ahead of ESC_PREPARE so the register read and the base add are off
+// the address path (DI -> ext_addr did not close at 94.5 MHz on the Pocket's
+// part). The registers do not change while an escape is decoded; the modrm
+// is taken as it arrives, so ESC_MODRM -> ESC_PREPARE sees the new one.
+wire [7:0]  escape_modrm_next = (escape_state == ESC_MODRM && escape_byte_valid) ?
+                                escape_byte : escape_modrm;
+reg  [15:0] escape_ea_base = 16'h0000;
+reg         escape_ea_ss   = 1'b0;
+always @(posedge clk) begin
+    escape_ea_base <= ea_base(escape_modrm_next);
+    escape_ea_ss   <= ea_defaults_ss(escape_modrm_next);
+end
 
 // V25 extension controller, register banks, SFR writes, and timer.
 always @(posedge clk) begin
@@ -1513,11 +1527,9 @@ always @(posedge clk) begin
                         end else begin
                             data_segment = arch_segment_override ?
                                            arch_override_segment :
-                                           (ea_defaults_ss(escape_modrm[2:0]) ?
-                                            arch_ss : arch_ds);
+                                           (escape_ea_ss ? arch_ss : arch_ds);
                             ext_addr <= {data_segment, 4'b0000} +
-                                        {4'b0000,
-                                         ea_base(escape_modrm[2:0]) + escape_disp};
+                                        {4'b0000, escape_ea_base + escape_disp};
                             ext_write <= 1'b0;
                             ext_word <= escape_is_word;
                             ext_req <= 1'b1;

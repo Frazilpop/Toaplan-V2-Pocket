@@ -1,0 +1,52 @@
+# The board's RTL and its SDRAM controller: everything dogyuun_game needs that
+# is not part of the Pocket shell. ap_core.qsf pulls it in whole. Keep in step
+# with the Makefile's lint list and sim/batsugun/build.sh, which compile the
+# same files (with fx68k's hdl/verilator/ variant instead).
+#
+# Paths are relative to this file (pocket/src/fpga), via $::quartus(qip_path),
+# so the list works from any project that includes it.
+#
+# The z8086 reads its microcode and the nitro table with $readmemh from
+# rtl/sound/..., relative to the project directory, and fx68k its microcode
+# from microrom.mem / nanorom.mem there: pocket/build.sh links rtl and the two
+# .mem files next to ap_core.qpf.
+
+set q $::quartus(qip_path)
+set r [file join $q ../../../rtl]
+set t [file join $q ../../../third_party]
+
+# The two macros upstream's MiSTer project sets for the board are in
+# ap_core.qsf (a .qip may not set VERILOG_MACRO).
+
+foreach f [concat \
+        [lsort [glob [file join $r board *.sv]]] \
+        [lsort [glob [file join $r video *.sv]]] \
+        [lsort [glob [file join $r sound *.sv]]] \
+        [lsort [glob [file join $r sound v25_compact *.sv]]]] {
+    set_global_assignment -name SYSTEMVERILOG_FILE $f
+}
+foreach f [concat \
+        [lsort [glob [file join $r sound *.v]]] \
+        [lsort [glob [file join $r jtframe ram *.v]]] \
+        [list [file join $r jtframe sdram jtframe_rom_1slot.v] \
+              [file join $r jtframe sdram jtframe_rom_2slots.v] \
+              [file join $r jtframe sdram jtframe_ramslot_ctrl.v]] \
+        [lsort [glob [file join $r jtframe sdram jtframe_romrq*.v]]] \
+        [lsort [glob [file join $r jtframe sdram jtframe_sdram64*.v]]]] {
+    set_global_assignment -name VERILOG_FILE $f
+}
+
+# fx68k: hdl/ is ijor's synthesis code.
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $t fx68k/hdl/fx68k.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $t fx68k/hdl/fx68kAlu.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $t fx68k/hdl/uaddrPla.sv]
+
+foreach f [lsort [glob [file join $t jt6295 hdl *.v]]] {
+    set_global_assignment -name VERILOG_FILE $f
+}
+set_global_assignment -name SEARCH_PATH [file join $t jt6295 hdl]
+
+set_global_assignment -name VERILOG_FILE [file join $t IKAOPM src IKAOPM.v]
+foreach f [lsort [glob [file join $t IKAOPM src IKAOPM_modules *.v]]] {
+    set_global_assignment -name VERILOG_FILE $f
+}

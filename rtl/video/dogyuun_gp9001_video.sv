@@ -198,23 +198,37 @@ dogyuun_gp9001_object_line u_gp1_object (
     .scan_valid        (gp1_object_valid)
 );
 
+// The four scan pixels, registered on their way to the mixer. The display
+// address (display_x) moves once a pixel, every 14 clocks, and the palette
+// is read well before the pixel is taken, so a clock here costs nothing; it
+// takes the line buffers' RAM output out of the mix -> palette address path
+// (which missed 94.5 MHz by 1 ns in the Pocket build).
+reg [14:0] gp0_tile_pixel_q = 15'd0, gp0_object_pixel_q = 15'd0;
+reg [14:0] gp1_tile_pixel_q = 15'd0, gp1_object_pixel_q = 15'd0;
+always @(posedge clk) begin
+    gp0_tile_pixel_q   <= gp0_tile_pixel;
+    gp0_object_pixel_q <= gp0_object_pixel;
+    gp1_tile_pixel_q   <= gp1_tile_pixel;
+    gp1_object_pixel_q <= gp1_object_pixel;
+end
+
 dogyuun_gp9001_line_mixer u_mixer (
     .gal_mix          (gal_mix),
     .display_y        (display_y),
     .display_epoch    (display_epoch),
-    .gp0_tile_pixel   (gp0_tile_pixel),
+    .gp0_tile_pixel   (gp0_tile_pixel_q),
     .gp0_tile_y       (gp0_tile_y),
     .gp0_tile_epoch   (gp0_tile_epoch),
     .gp0_tile_valid   (gp0_tile_valid),
-    .gp0_object_pixel (gp0_object_pixel),
+    .gp0_object_pixel (gp0_object_pixel_q),
     .gp0_object_y     (gp0_object_y),
     .gp0_object_epoch (gp0_object_epoch),
     .gp0_object_valid (gp0_object_valid),
-    .gp1_tile_pixel   (gp1_tile_pixel),
+    .gp1_tile_pixel   (gp1_tile_pixel_q),
     .gp1_tile_y       (gp1_tile_y),
     .gp1_tile_epoch   (gp1_tile_epoch),
     .gp1_tile_valid   (gp1_tile_valid),
-    .gp1_object_pixel (gp1_object_pixel),
+    .gp1_object_pixel (gp1_object_pixel_q),
     .gp1_object_y     (gp1_object_y),
     .gp1_object_epoch (gp1_object_epoch),
     .gp1_object_valid (gp1_object_valid),

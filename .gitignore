@@ -79,8 +79,8 @@ obj_dir/
 *.hex
 # Two upstream tables that are not game data: z8086's 8086 microcode, and the
 # V25's opcode table as MAME's toaplan_v25_tables.h gives it.
-!/rtl/modules/v25_compact/ucode.hex
-!/rtl/dogyuun/dogyuun_nitro_decryption.hex
+!/rtl/sound/v25_compact/ucode.hex
+!/rtl/sound/dogyuun_nitro_decryption.hex
 
 # fx68k loads its microcode with $readmemb at run time, relative to the working
 # directory; the bootstrap symlinks it here. Upstream files.
@@ -88,6 +88,12 @@ obj_dir/
 /nanorom.mem
 /pocket/src/fpga/microrom.mem
 /pocket/src/fpga/nanorom.mem
+# pocket/build.sh's links in the Quartus project: generated files into
+# build/, and the RTL for its $readmemh paths. Analogue's pre-flow script
+# rewrites the build-date ROM at every compile.
+/pocket/src/fpga/output_files
+/pocket/src/fpga/rtl
+/pocket/src/fpga/apf/build_id.mif
 
 # MAME's own cfg/nvram directories, left by a run started from the repo root
 /cfg/
