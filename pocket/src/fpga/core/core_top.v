@@ -620,15 +620,28 @@ wire board_rst = cold_rst | ~reset_n_sys | host_rst | ~rom_loaded | ~cfg_valid;
 // per-bit synchroniser is enough: a press that lands one cycle earlier on one
 // bit than another is invisible to a game polling at 60 Hz.
 //
-// The board's joysticks are {B3,B2,B1,right,left,down,up}, active low, and
-// key[6:0] is {X,B,A,right,left,down,up}: A is button 1 (shot), B button 2
-// (bomb), X button 3. Select is the coin, Start is start.
+// The board's joysticks are JTFrame's {B3,B2,B1,up,down,left,right}, active
+// low (dogyuun_inputs), and key[6:0] is {X,B,A,right,left,down,up}, so the
+// D-pad's four bits go in reversed: A is button 1 (shot), B button 2 (bomb),
+// X button 3. Select is the coin, Start is start. The picture is turned by
+// APF (video.json), not by the board, so the D-pad needs no turning: the
+// game's up is the Pocket's up on the turned picture.
+//
+// R (key[9], trig_r1) is rapid shot: button 1 pressed on one frame and
+// released on the next, toggled once a frame at the end of vblank (below),
+// so a game reading its buttons once a frame sees a new press every other
+// frame. A wins: button 1 is A or the rapid press, so A and R together are
+// the button held. The phase rests pressed while R is up, so R fires on the
+// frame it is pressed.
 wire [15:0] k1, k2;
 synch_3 #(.WIDTH(16)) s_k1 (.i(cont1_key[15:0]), .o(k1), .clk(clk_sys), .rise(), .fall());
 synch_3 #(.WIDTH(16)) s_k2 (.i(cont2_key[15:0]), .o(k2), .clk(clk_sys), .rise(), .fall());
 
-wire [6:0] joy1_n  = ~k1[6:0];
-wire [6:0] joy2_n  = ~k2[6:0];
+reg  [1:0] rapid    = 2'b11;                //   {p2, p1}: the rapid press's phase
+wire [1:0] rapid_b1 = {k2[9], k1[9]} & rapid;
+
+wire [6:0] joy1_n  = ~{k1[6:5], k1[4] | rapid_b1[0], k1[0], k1[1], k1[2], k1[3]};
+wire [6:0] joy2_n  = ~{k2[6:5], k2[4] | rapid_b1[1], k2[0], k2[1], k2[2], k2[3]};
 wire [3:0] coin_n  = ~{2'b00, k2[14], k1[14]};
 wire [3:0] start_n = ~{2'b00, k2[15], k1[15]};
 
@@ -948,6 +961,13 @@ reg  [2:0]  rb_i  = 3'd4;                         // 4: not capturing
 reg         rb_armed = 1'b0;
 integer     j;
 
+// Rapid shot's phase (inputs, above): flipped at the end of vblank.
+always @(posedge clk_sys) begin
+    if (!vid_vblank && vb_q) rapid <= ~rapid;
+    if (!k1[9]) rapid[0] <= 1'b1;
+    if (!k2[9]) rapid[1] <= 1'b1;
+end
+
 always @(posedge clk_sys) begin
     diag_opt_q <= diag_opt;
     // Request-to-ready on each bank: a request is a level, held until the
@@ -999,10 +1019,23 @@ wire rb_good = !rb_armed && rb_i == 3'd4 &&
                rb_w[0] == exp_w[0] && rb_w[1] == exp_w[1] &&
                rb_w[2] == exp_w[2] && rb_w[3] == exp_w[3];
 
-wire [15:0] diag_flags = {rb_good, frame[5], diag_opt, dbg_oki_busy, f_miss,
-                          dbg_v25_fault, dbg_v25_run, board_rst,
-                          dbg_loader_error, cfg_valid, ld_overflow, rom_loaded,
-                          f_allc, reset_n_sys, mem_ready_sys, locked_sys};
+// Registered, so that nothing on the board (the V25's PC is computed from
+// its prefetch queue) reaches the overlay's text and the video register in
+// the same clock. The overlay shows each value a clock late.
+reg  [15:0]  diag_flags = 16'd0;
+reg  [255:0] diag_cnt   = 256'd0;
+always @(posedge clk_sys) begin
+    diag_flags <= {rb_good, frame[5], diag_opt, dbg_oki_busy, f_miss,
+                   dbg_v25_fault, dbg_v25_run, board_rst,
+                   dbg_loader_error, cfg_valid, ld_overflow, rom_loaded,
+                   f_allc, reset_n_sys, mem_ready_sys, locked_sys};
+    diag_cnt   <= {rb_w[3], rb_w[2], rb_w[1], rb_w[0],
+                   5'd0, ld_bytes,
+                   frames,
+                   12'd0, dbg_v25_pc,
+                   miss[3], miss[2], miss[1], miss[0],
+                   w_max[3], w_max[2], w_max[1], w_max[0]};
+end
 wire [7:0]  dr, dg, db;
 pocket_diag u_diag (
     .clk    (clk_sys),
@@ -1013,12 +1046,7 @@ pocket_diag u_diag (
     .enable (diag_opt | board_rst),
     .bars   (board_rst),
     .flags  (diag_flags),
-    .cnt    ({rb_w[3], rb_w[2], rb_w[1], rb_w[0],
-              5'd0, ld_bytes,
-              frames,
-              12'd0, dbg_v25_pc,
-              miss[3], miss[2], miss[1], miss[0],
-              w_max[3], w_max[2], w_max[1], w_max[0]}),
+    .cnt    (diag_cnt),
     .r_out  (dr), .g_out (dg), .b_out (db)
 );
 
