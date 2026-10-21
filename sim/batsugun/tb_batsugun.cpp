@@ -247,8 +247,8 @@ int main(int argc, char** argv) {
     auto apply_inputs = [&](int fr) {
         while (plan_i < plan.size() && plan[plan_i].frame <= fr) {
             const Step& s = plan[plan_i++];
-            // joystick = {B3,B2,B1,R,L,D,U}, active low (dogyuun_inputs)
-            static const char* names[] = {"up", "down", "left", "right", "b1", "b2", "b3"};
+            // joystick = {B3,B2,B1,U,D,L,R}, active low (dogyuun_inputs)
+            static const char* names[] = {"right", "left", "down", "up", "b1", "b2", "b3"};
             for (int b = 0; b < 7; b++)
                 if (s.name == names[b]) {
                     if (s.val) t->joy1_n &= ~(1u << b); else t->joy1_n |= 1u << b;

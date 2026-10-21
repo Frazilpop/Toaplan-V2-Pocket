@@ -20,7 +20,7 @@ module tb_batsugun (
     input              ioctl_wr,
     output             dwnld_busy,
 
-    input      [6:0]   joy1_n,      // {B3,B2,B1,R,L,D,U}, active low
+    input      [6:0]   joy1_n,      // {B3,B2,B1,U,D,L,R}, active low
     input      [6:0]   joy2_n,
     input      [3:0]   start_n,
     input      [3:0]   coin_n,
