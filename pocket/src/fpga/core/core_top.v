@@ -627,18 +627,22 @@ wire board_rst = cold_rst | ~reset_n_sys | host_rst | ~rom_loaded | ~cfg_valid;
 // APF (video.json), not by the board, so the D-pad needs no turning: the
 // game's up is the Pocket's up on the turned picture.
 //
-// R (key[9], trig_r1) is rapid shot: button 1 pressed on one frame and
-// released on the next, toggled once a frame at the end of vblank (below),
-// so a game reading its buttons once a frame sees a new press every other
-// frame. A wins: button 1 is A or the rapid press, so A and R together are
-// the button held. The phase rests pressed while R is up, so R fires on the
-// frame it is pressed.
+// R (key[9], trig_r1) is rapid shot: button 1 pressed for one frame in four,
+// a 15 Hz tap. Batsugun reads its buttons once a frame, on line 257, and in
+// MAME a press every fourth frame gives the steadiest stream of shots: on
+// alternate frames it fires in bursts with gaps, and slower than one in four
+// the stream thins again. The phase steps at the start of vblank (below),
+// line 240, so the read comes after the step even when the game's interrupt
+// runs late. A wins: button 1 is A or the rapid press, so A and R together
+// are the button held. The phase rests at the press while R is up, so R
+// fires on the frame it is pressed.
 wire [15:0] k1, k2;
 synch_3 #(.WIDTH(16)) s_k1 (.i(cont1_key[15:0]), .o(k1), .clk(clk_sys), .rise(), .fall());
 synch_3 #(.WIDTH(16)) s_k2 (.i(cont2_key[15:0]), .o(k2), .clk(clk_sys), .rise(), .fall());
 
-reg  [1:0] rapid    = 2'b11;                //   {p2, p1}: the rapid press's phase
-wire [1:0] rapid_b1 = {k2[9], k1[9]} & rapid;
+reg  [1:0] rapid1   = 2'd0;                 //   the rapid press's phase, 0 pressed
+reg  [1:0] rapid2   = 2'd0;
+wire [1:0] rapid_b1 = {k2[9] && rapid2 == 2'd0, k1[9] && rapid1 == 2'd0};
 
 wire [6:0] joy1_n  = ~{k1[6:5], k1[4] | rapid_b1[0], k1[0], k1[1], k1[2], k1[3]};
 wire [6:0] joy2_n  = ~{k2[6:5], k2[4] | rapid_b1[1], k2[0], k2[1], k2[2], k2[3]};
@@ -961,11 +965,14 @@ reg  [2:0]  rb_i  = 3'd4;                         // 4: not capturing
 reg         rb_armed = 1'b0;
 integer     j;
 
-// Rapid shot's phase (inputs, above): flipped at the end of vblank.
+// Rapid shot's phase (inputs, above): stepped at the start of vblank.
 always @(posedge clk_sys) begin
-    if (!vid_vblank && vb_q) rapid <= ~rapid;
-    if (!k1[9]) rapid[0] <= 1'b1;
-    if (!k2[9]) rapid[1] <= 1'b1;
+    if (vid_vblank && !vb_q) begin
+        rapid1 <= rapid1 + 2'd1;
+        rapid2 <= rapid2 + 2'd1;
+    end
+    if (!k1[9]) rapid1 <= 2'd0;
+    if (!k2[9]) rapid2 <= 2'd0;
 end
 
 always @(posedge clk_sys) begin
