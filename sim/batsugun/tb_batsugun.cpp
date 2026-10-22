@@ -16,8 +16,9 @@
 //     --wav FILE           the board's mono output at its sample rate
 //                          (YM2151 rate, 3.375 MHz / 64), 16-bit
 //     --stream             stream the whole image through the loader (default:
-//                          the header through the loader, the regions written
-//                          straight into the SDRAM model, as the loader would)
+//                          the header and the audiocpu region through the
+//                          loader, the other regions written straight into
+//                          the SDRAM model, as the loader would)
 //     --inputs FILE        "<frame> coin=1 start=1 up=0 b1=1 ..." lines
 //     --events FILE        tools/mame_toaplan2_events.lua's events, timed in
 //                          clocks from the release of reset: the 68000's
@@ -196,6 +197,12 @@ int main(int argc, char** argv) {
         send(a, rom[a]);
         if (stream && (a & 0xfffff) == 0)
             fprintf(stderr, "loading %u of %u KB\n", a >> 10, img_len >> 10);
+    }
+    // TP-023's V25 ROM goes into block RAM through the loader's audio port,
+    // so the audiocpu region is always streamed (32 KB).
+    if (!stream) {
+        uint32_t off = le32(rom, 0x28), len = le32(rom, 0x2c);
+        for (uint32_t k = 0; k < len; k++) send(off + k, rom[off + k]);
     }
     t->ioctl_rom = 0;
     for (int i = 0; i < 100000 && t->dwnld_busy; i++) tick();

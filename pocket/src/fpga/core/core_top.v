@@ -709,6 +709,7 @@ wire          dip_flip;
 wire          dbg_loader_error, dbg_v25_run, dbg_v25_fault, dbg_oki_busy;
 wire [3:0]    dbg_deadline_miss;
 wire [19:0]   dbg_v25_pc;
+wire          cfg_rot0;
 
 dogyuun_game #(.AW(AW)) u_game (
     .rst        (board_rst),
@@ -789,7 +790,8 @@ dogyuun_game #(.AW(AW)) u_game (
     .dbg_v25_fault    (dbg_v25_fault),
     .dbg_deadline_miss(dbg_deadline_miss),
     .dbg_oki_busy     (dbg_oki_busy),
-    .dbg_v25_pc       (dbg_v25_pc)
+    .dbg_v25_pc       (dbg_v25_pc),
+    .cfg_rot0         (cfg_rot0)
 );
 
 // ================================================================== SDRAM
@@ -1066,6 +1068,11 @@ wire [7:0] mb = inmenu_sys ? 8'd0 : db;
 assign video_rgb_clock    = clk_vid;
 assign video_rgb_clock_90 = clk_vid90;
 
+// The game's rotation, from the image header: video.json's scaler mode 1
+// for ROT0, 0 for ROT270. Registered here; it changes only on a load.
+reg rot0_q = 1'b0;
+always @(posedge clk_sys) rot0_q <= cfg_rot0;
+
 pocket_video u_video (
     .clk       (clk_sys),
     .ce_pix    (pxl_cen),
@@ -1076,6 +1083,7 @@ pocket_video u_video (
     .r         (mr),
     .g         (mg),
     .b         (mb),
+    .scaler_slot ({2'b00, rot0_q}),
     .clk_vid   (clk_vid),
     .video_rgb (video_rgb),
     .video_de  (video_de),

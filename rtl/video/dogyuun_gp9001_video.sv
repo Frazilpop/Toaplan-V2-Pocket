@@ -4,6 +4,7 @@ module dogyuun_gp9001_video (
     input              clk,
     input              rst,
     input              gal_mix,
+    input              two_gp,
     input      [1:0]   gp0_gfx_size,
     input      [1:0]   gp1_gfx_size,
     input              line_start,
@@ -214,6 +215,7 @@ end
 
 dogyuun_gp9001_line_mixer u_mixer (
     .gal_mix          (gal_mix),
+    .two_gp           (two_gp),
     .display_y        (display_y),
     .display_epoch    (display_epoch),
     .gp0_tile_pixel   (gp0_tile_pixel_q),

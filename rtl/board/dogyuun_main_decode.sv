@@ -1,10 +1,15 @@
-// Exact MC68000 word-bus decode for the TP-030 / TP-022 board map.
+// Exact MC68000 word-bus decode for the Toaplan V2 V25 boards' maps.
 // Work RAM at 100000 is 2^WRAM_AW words at most; wram_64k (from the image
-// header) maps all 64 KB (TP-030), else 16 KB (TP-022).
+// header) maps all 64 KB (TP-030), else 16 KB. TP-030, TP-022 and TP-027
+// share the map (shared RAM at 210000, I/O at 2000xx); TP-023 (Knuckle Bash)
+// has 2 KB of shared RAM at 200000 and its I/O at 2080xx. The second GP9001
+// at 500000 is there only on a two-chip board (two_gp).
 module dogyuun_main_decode #(
     parameter integer WRAM_AW = 13
 ) (
     input             wram_64k,
+    input             tp023,
+    input             two_gp,
     input      [23:0] addr,
     input             bus_active,
     input             rw,
@@ -28,6 +33,7 @@ module dogyuun_main_decode #(
 );
 
 wire read_cycle = bus_active && rw;
+wire [23:0] io_base = tp023 ? 24'h208000 : 24'h200000;
 
 assign rom_cs        = bus_active && (addr < 24'h080000);
 assign rom_read_cs   = rom_cs && rw;
@@ -35,20 +41,21 @@ assign wram_cs       = bus_active &&
                        (addr >= 24'h100000) &&
                        (addr < 24'h100000 + (wram_64k ? (24'd2 << WRAM_AW) : 24'h004000));
 assign in1_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == 24'h200010);
+                       ((addr & 24'hfffffe) == io_base + 24'h10);
 assign in2_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == 24'h200014);
+                       ((addr & 24'hfffffe) == io_base + 24'h14);
 assign sys_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == 24'h200018);
+                       ((addr & 24'hfffffe) == io_base + 24'h18);
 assign sound_ctrl_cs = bus_active &&
-                       ((addr & 24'hfffffe) == 24'h20001c);
-assign shared_cs     = bus_active &&
-                       (addr >= 24'h210000) && (addr < 24'h220000);
+                       ((addr & 24'hfffffe) == io_base + 24'h1c);
+assign shared_cs     = bus_active && (tp023 ?
+                       (addr[23:12] == 12'h200) :
+                       ((addr >= 24'h210000) && (addr < 24'h220000)));
 assign gp0_cs        = bus_active &&
                        (addr >= 24'h300000) && (addr < 24'h30000e);
 assign palette_cs    = bus_active &&
                        (addr >= 24'h400000) && (addr < 24'h401000);
-assign gp1_cs        = bus_active &&
+assign gp1_cs        = bus_active && two_gp &&
                        (addr >= 24'h500000) && (addr < 24'h50000e);
 assign vcount_cs     = read_cycle &&
                        ((addr & 24'hfffffe) == 24'h700000);
