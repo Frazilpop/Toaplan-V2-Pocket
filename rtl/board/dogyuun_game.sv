@@ -1,9 +1,12 @@
-// Toaplan V2 two-GP9001 board (TP-030 Batsugun, TP-022 Dogyuun): ROM image
-// loading, board-accurate raster, MC68000, V25/audio subsystem, and the
-// dual-GP9001 line renderer. What differs between the boards comes from the
-// image header (dogyuun_rom_loader's cfg_*): clocks, work RAM, the V25's
-// opcode decryption (nitro, or none), its DIP ports, the OKI's rate, the graphics region sizes and
-// the GP mix. dipsw is XORed into the header's DIP defaults (0: MAME's).
+// Toaplan V2 board with the V25 (TP-030 Batsugun, TP-022 Dogyuun, TP-023
+// Knuckle Bash, TP-027 Grind Stormer / V-Five): ROM image loading,
+// board-accurate raster, MC68000, V25/audio subsystem, and the dual-GP9001
+// line renderer (the second chip idle on a one-chip board). What differs
+// between the boards comes from the image header (dogyuun_rom_loader's
+// cfg_*): clocks, work RAM, the 68000's and V25's maps, the V25's opcode
+// decryption (nitro, or none), its DIP ports, the OKI's rate, the graphics
+// region sizes and the GP mix. dipsw is XORed into the header's DIP
+// defaults (0: MAME's).
 module dogyuun_game #(
     parameter integer AW = 22
 ) (
@@ -110,7 +113,8 @@ module dogyuun_game #(
     output             dbg_v25_fault,
     output     [3:0]   dbg_deadline_miss,  // a line engine missed its line (pulses)
     output             dbg_oki_busy,       // an OKI channel playing
-    output     [19:0]  dbg_v25_pc
+    output     [19:0]  dbg_v25_pc,
+    output             cfg_rot0            // the game is ROT0 (Knuckle Bash)
 );
 
 localparam [9:0] H_TOTAL = 10'd432;
@@ -141,6 +145,11 @@ wire [1:0]  cfg_gp0_size;
 wire [1:0]  cfg_gp1_size;
 localparam [2:0] BOARD_TP030 = 3'd0;
 localparam [2:0] BOARD_TP022 = 3'd1;
+localparam [2:0] BOARD_TP023 = 3'd2;
+wire        loader_audio_we;
+wire [14:0] loader_audio_addr;
+wire [7:0]  loader_audio_data;
+wire [7:0]  sound_rom_data;
 wire [7:0]  dswa = cfg_dswa ^ dipsw[7:0];
 wire [7:0]  dswb = cfg_dswb ^ dipsw[15:8];
 wire [7:0]  jmpr = cfg_jmpr ^ dipsw[23:16];
@@ -292,6 +301,7 @@ dogyuun_rom_loader #(.AW(AW)) u_rom_loader (
     .cfg_valid      ( cfg_valid             ),
     .cfg_board      ( cfg_board             ),
     .cfg_two_gp     ( cfg_two_gp            ),
+    .cfg_rot0       ( cfg_rot0              ),
     .cfg_table      ( cfg_table             ),
     .cfg_oki_pin7   ( cfg_oki_pin7          ),
     .cfg_wram_64k   ( cfg_wram_64k          ),
@@ -304,6 +314,9 @@ dogyuun_rom_loader #(.AW(AW)) u_rom_loader (
     .cfg_jmpr       ( cfg_jmpr              ),
     .cfg_gp0_size   ( cfg_gp0_size          ),
     .cfg_gp1_size   ( cfg_gp1_size          ),
+    .audio_we       ( loader_audio_we       ),
+    .audio_addr     ( loader_audio_addr     ),
+    .audio_data     ( loader_audio_data     ),
     .eeprom_we      (                       ),
     .eeprom_addr    (                       ),
     .eeprom_data    (                       ),
@@ -388,6 +401,11 @@ dogyuun_main u_main (
     .halt_n              (dip_pause),
     .cpu_num             (cfg_cpu_num),
     .wram_64k            (cfg_wram_64k),
+    .board               (cfg_board),
+    .two_gp              (cfg_two_gp),
+    .audio_we            (loader_audio_we),
+    .audio_addr          (loader_audio_addr),
+    .audio_data          (loader_audio_data),
     .rom_cs              (main_rom_cs),
     .rom_addr            (main_rom_addr),
     .rom_data            (main_rom_data),
@@ -403,6 +421,7 @@ dogyuun_main u_main (
     .sound_shared_din    (sound_shared_dout),
     .sound_shared_we     (sound_shared_we),
     .sound_shared_dout   (sound_shared_din),
+    .sound_rom_dout      (sound_rom_data),
     .coin_control        (main_coin_control),
     .v25_reset_n         (main_v25_reset_n),
     .palette_scan_addr   (palette_snapshot_addr),
@@ -436,6 +455,7 @@ dogyuun_sound u_sound (
     .oki_wrap            (cfg_oki_wrap),
     .oki_pin7            (cfg_oki_pin7),
     .secure_mode         (cfg_table == 2'd1),   // nitro; 0 is plain
+    .tp023               (cfg_board == BOARD_TP023),
     .port_t              (v25_port_t),
     .port_0              (v25_port_0),
     .port_1              (jmpr),
@@ -446,6 +466,7 @@ dogyuun_sound u_sound (
     .shared_dout         (sound_shared_dout),
     .shared_we           (sound_shared_we),
     .shared_din          (sound_shared_din),
+    .rom_din             (sound_rom_data),
     .oki_rom_addr        (sound_oki_rom_addr),
     .oki_rom_data        (sound_oki_rom_data),
     .oki_rom_ok          (sound_oki_rom_ok),
@@ -531,6 +552,7 @@ dogyuun_gp9001_video u_video (
     .clk                 (clk),
     .rst                 (video_reset),
     .gal_mix             (cfg_board == BOARD_TP030),
+    .two_gp              (cfg_two_gp),
     .gp0_gfx_size        (cfg_gp0_size),
     .gp1_gfx_size        (cfg_gp1_size),
     .line_start          (video_line_start),

@@ -2,6 +2,12 @@
 // GP9001 CPU ports, VDP status, IRQ4, and the V25 release latch.
 // Work RAM is 2^WRAM_AW words: 64 KB (Batsugun) at the default, 16 KB of it
 // mapped unless wram_64k. The 68000 runs at 94.5 x cpu_num / 189 MHz.
+// The board (from the image header) sets the rest of the map: the V25's
+// reset is coin_control bit 5 (TP-030, TP-022), bit 4 (TP-027), or the board
+// reset alone (TP-023, whose V25 runs its own ROM). On TP-023 the 68000's
+// shared RAM is 2 KB of its own, and the 32 KB RAM the other boards share
+// holds the V25's ROM instead, written by the loader (audio_*) while the
+// board is in reset; the V25 reads it as sound_rom_dout.
 module dogyuun_main #(
     parameter integer WRAM_AW = 15
 ) (
@@ -10,6 +16,11 @@ module dogyuun_main #(
     input              halt_n,
     input      [6:0]   cpu_num,
     input              wram_64k,
+    input      [2:0]   board,
+    input              two_gp,
+    input              audio_we,
+    input      [14:0]  audio_addr,
+    input      [7:0]   audio_data,
 
     output             rom_cs,
     output     [17:0]  rom_addr,
@@ -28,6 +39,7 @@ module dogyuun_main #(
     input      [7:0]   sound_shared_din,
     input              sound_shared_we,
     output     [7:0]   sound_shared_dout,
+    output     [7:0]   sound_rom_dout,
     output reg [7:0]   coin_control,
     output             v25_reset_n,
 
@@ -75,6 +87,9 @@ wire cpu_bus_active = !cpu_as_n && (!cpu_uds_n || !cpu_lds_n);
 wire cpu_read = cpu_bus_active && cpu_rw;
 wire cpu_write = cpu_bus_active && !cpu_rw;
 wire cpu_core_reset = rst;
+localparam [2:0] BOARD_TP023 = 3'd2;
+localparam [2:0] BOARD_TP027 = 3'd4;
+wire tp023 = board == BOARD_TP023;
 
 wire rom_bus_cs;
 wire rom_read_cs;
@@ -95,6 +110,8 @@ wire unmapped_cs;
 
 dogyuun_main_decode #(.WRAM_AW(WRAM_AW)) u_decode (
     .wram_64k      (wram_64k),
+    .tp023         (tp023),
+    .two_gp        (two_gp),
     .addr          (cpu_addr8),
     .bus_active    (cpu_bus_active),
     .rw            (cpu_rw),
@@ -276,6 +293,8 @@ wire [1:0] wram_we = {
     ack_now && wram_cs && cpu_write && !cpu_lds_n
 };
 wire shared_we = ack_now && shared_cs && cpu_write && !cpu_lds_n;
+wire big_shared_we = shared_we && !tp023;
+wire small_shared_we = shared_we && tp023;
 wire [1:0] palette_we = {
     ack_now && palette_cs && cpu_write && !cpu_uds_n,
     ack_now && palette_cs && cpu_write && !cpu_lds_n
@@ -283,6 +302,10 @@ wire [1:0] palette_we = {
 
 wire [15:0] wram_dout;
 wire [7:0] shared_dout;
+wire [7:0] big_shared_dout;
+wire [7:0] small_shared_dout;
+wire [7:0] big_sound_q;
+wire [7:0] small_sound_q;
 wire [15:0] palette_dout;
 jtframe_dual_ram16 #(.AW(WRAM_AW)) u_wram (
     .clk0  (clk),
@@ -299,16 +322,34 @@ jtframe_dual_ram16 #(.AW(WRAM_AW)) u_wram (
 
 jtframe_dual_ram #(.DW(8), .AW(15)) u_shared_ram (
     .clk0  (clk),
-    .data0 (cpu_dout[7:0]),
-    .addr0 (cpu_addr8[15:1]),
-    .we0   (shared_we),
-    .q0    (shared_dout),
+    .data0 (audio_we ? audio_data : cpu_dout[7:0]),
+    .addr0 (audio_we ? audio_addr : cpu_addr8[15:1]),
+    .we0   (big_shared_we || audio_we),
+    .q0    (big_shared_dout),
     .clk1  (sound_clk),
     .data1 (sound_shared_din),
     .addr1 (sound_shared_addr),
-    .we1   (sound_shared_we),
-    .q1    (sound_shared_dout)
+    .we1   (sound_shared_we && !tp023),
+    .q1    (big_sound_q)
 );
+
+// TP-023's 2 KB: 68000 200000-200fff (low bytes), V25 00000-007ff.
+jtframe_dual_ram #(.DW(8), .AW(11)) u_tp023_shared_ram (
+    .clk0  (clk),
+    .data0 (cpu_dout[7:0]),
+    .addr0 (cpu_addr8[11:1]),
+    .we0   (small_shared_we),
+    .q0    (small_shared_dout),
+    .clk1  (sound_clk),
+    .data1 (sound_shared_din),
+    .addr1 (sound_shared_addr[10:0]),
+    .we1   (sound_shared_we && tp023),
+    .q1    (small_sound_q)
+);
+
+assign shared_dout = tp023 ? small_shared_dout : big_shared_dout;
+assign sound_shared_dout = tp023 ? small_sound_q : big_sound_q;
+assign sound_rom_dout = big_sound_q;
 
 jtframe_dual_ram16 #(.AW(11)) u_palette_ram (
     .clk0  (clk),
@@ -356,7 +397,8 @@ always @(posedge clk) begin
     end
 end
 
-assign v25_reset_n = coin_control[5];
+assign v25_reset_n = tp023 ? 1'b1 :
+                     (board == BOARD_TP027) ? coin_control[4] : coin_control[5];
 
 always @(posedge clk) begin
     if (rst) begin

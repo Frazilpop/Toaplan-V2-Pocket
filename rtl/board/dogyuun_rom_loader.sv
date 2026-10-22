@@ -6,7 +6,9 @@
 // the region table maps every later byte to its SDRAM bank:
 //
 //   maincpu  -> bank 0        gp9001_0 -> bank 1       gp9001_1 -> bank 2
-//   oki      -> bank 3 at 0   audiocpu -> bank 3 at AUDIO_BASE bytes
+//   oki      -> bank 3 at 0   audiocpu -> bank 3 at AUDIO_BASE bytes,
+//                                         and the audio_* port (TP-023's
+//                                         V25 ROM, 32 KB, into block RAM)
 //   eeprom   -> the eeprom_* port (byte address, 128 bytes)
 //
 // Clocks are held as the Hz the header gives and decoded into the board's
@@ -43,6 +45,7 @@ module dogyuun_rom_loader #(
     output reg              cfg_valid,
     output reg [2:0]        cfg_board,
     output reg              cfg_two_gp,
+    output reg              cfg_rot0,       // MAME ROT0 (Knuckle Bash); else ROT270
     output reg [1:0]        cfg_table,
     output reg              cfg_oki_pin7,
     output reg              cfg_wram_64k,
@@ -55,6 +58,10 @@ module dogyuun_rom_loader #(
     output reg [7:0]        cfg_jmpr,
     output reg [1:0]        cfg_gp0_size,   // 0: 2 MB, 1: 4 MB, 2: 8 MB
     output reg [1:0]        cfg_gp1_size,
+
+    output reg              audio_we,
+    output reg [14:0]       audio_addr,
+    output reg [7:0]        audio_data,
 
     output reg              eeprom_we,
     output reg [6:0]        eeprom_addr,
@@ -141,6 +148,7 @@ wire [14:0] s2_page_local = s2_addr[26:12] - pg_off[s2_region];
 wire [26:0] s2_local = {s2_page_local[14:0], s2_addr[11:0]};
 wire [AW-1:0] s3_word = s3_byte[AW:1];
 wire s3_sdram = s3_region <= 3'd4;
+wire [14:0] s3_local_audio = s3_byte[14:0];   // AUDIO_BASE is 32 KB-aligned
 
 always @(posedge clk) begin
     if (rst) begin
@@ -192,10 +200,12 @@ end
 integer k;
 always @(posedge clk) begin
     eeprom_we <= 1'b0;
+    audio_we <= 1'b0;
     if (rst) begin
         magic <= 32'd0;
         cfg_board <= 3'd0;
         cfg_two_gp <= 1'b1;
+        cfg_rot0 <= 1'b0;
         cfg_table <= 2'd0;
         cfg_oki_pin7 <= 1'b0;
         cfg_wram_64k <= 1'b1;
@@ -213,6 +223,8 @@ always @(posedge clk) begin
         end
         eeprom_addr <= 7'd0;
         eeprom_data <= 8'd0;
+        audio_addr <= 15'd0;
+        audio_data <= 8'd0;
     end else if (s1_wr && s1_addr < HEADER_END) begin
         case (s1_addr[11:0])
             12'h000: magic[7:0]   <= s1_data;
@@ -222,6 +234,7 @@ always @(posedge clk) begin
             12'h005: cfg_board    <= s1_data[2:0];
             12'h006: cfg_two_gp   <= s1_data == 8'd2;
             12'h007: cfg_table    <= s1_data[1:0];
+            12'h008: cfg_rot0     <= s1_data == 8'd0;
             12'h00a: cfg_oki_pin7 <= s1_data == 8'd1;
             12'h00b: cfg_wram_64k <= s1_data == 8'd64;
             12'h018: cfg_dswa     <= s1_data;
@@ -256,6 +269,11 @@ always @(posedge clk) begin
         eeprom_we   <= 1'b1;
         eeprom_addr <= s3_byte[6:0];
         eeprom_data <= s3_data;
+    end
+    if (s3_wr && !s3_header && s3_region == 3'd1) begin
+        audio_we   <= 1'b1;
+        audio_addr <= s3_local_audio;
+        audio_data <= s3_data;
     end
 end
 

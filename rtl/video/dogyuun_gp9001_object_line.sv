@@ -70,7 +70,7 @@ reg [7:0] scroll_flip_latched = 8'd0;
 
 reg signed [11:0] sprite_x_base = 12'sd0;
 reg [4:0] sprite_x_chunks = 5'd1;
-reg [16:0] sprite_code_row = 17'd0;
+reg [17:0] sprite_code_row = 18'd0;
 reg [3:0] sprite_priority = 4'd0;
 reg [5:0] sprite_color = 6'd0;
 reg sprite_flip_x = 1'b0;
@@ -99,7 +99,7 @@ reg stage0_flip_y_local = 1'b0;
 
 reg process_hits_line = 1'b0;
 reg [4:0] process_x_chunks = 5'd1;
-reg [16:0] process_code_base = 17'd0;
+reg [17:0] process_code_base = 18'd0;
 reg [3:0] process_priority = 4'd0;
 reg [5:0] process_color = 6'd0;
 reg process_effective_flip_x = 1'b0;
@@ -168,7 +168,7 @@ function automatic [3:0] packed_pixel;
 endfunction
 
 function automatic [21:0] sprite_gfx_addr;
-    input [16:0] code;
+    input [17:0] code;
     input [2:0]  py;
     input        upper_planes;
     reg [20:0] local_address;
@@ -184,8 +184,8 @@ function automatic [21:0] sprite_gfx_addr;
                 sprite_gfx_addr = {1'b0, local_address} +
                     (upper_planes ? 22'h100000 : 22'h000000);
             end
-            default: begin  // 8 MB: the code's 18th bit is not carried yet
-                local_address = {1'b0, code[16:0], 3'b000} + py;
+            default: begin  // 8 MB: all 18 bits
+                local_address = {code[17:0], 3'b000} + py;
                 sprite_gfx_addr = {1'b0, local_address} +
                     (upper_planes ? 22'h200000 : 22'h000000);
             end
@@ -206,9 +206,11 @@ wire desc_local_flip_y = desc_attr[13];
 wire desc_effective_flip_x = desc_local_flip_x ^ global_flip_x;
 wire desc_effective_flip_y = desc_local_flip_y ^ global_flip_y;
 wire signed [12:0] target_y_signed = $signed({4'b0000, target_y_latched});
-// Dogyuun GP1 has 2^17 sprite elements. MAME forms an 18-bit code and
-// applies modulo total_elements, leaving attribute bit 0 as code bit 16.
-wire [16:0] desc_code_base = {desc_attr[0], desc_code};
+// MAME forms an 18-bit code, {attribute bits 1-0, code word}, and applies
+// modulo total_elements: 2^16 for 2 MB, 2^17 for 4 MB (Dogyuun's GP1),
+// 2^18 for 8 MB (Knuckle Bash); sprite_gfx_addr takes the bits gfx_size
+// keeps.
+wire [17:0] desc_code_base = {desc_attr[1:0], desc_code};
 
 // The descriptor geometry used to be one combinational chain evaluated in
 // ST_DESC_PROCESS: position add, wrapped_base, global-flip mirror, line
@@ -273,7 +275,7 @@ wire [8:0] process_row_code_offset =
 wire signed [11:0] chunk_offset = $signed({4'b0000, chunk, 3'b000});
 wire signed [11:0] chunk_x = sprite_flip_x ?
     sprite_x_base - chunk_offset : sprite_x_base + chunk_offset;
-wire [16:0] current_code = sprite_code_row + chunk;
+wire [17:0] current_code = sprite_code_row + chunk;
 wire signed [12:0] chunk_x_extended = {chunk_x[11], chunk_x};
 wire signed [12:0] chunk_x_end = chunk_x_extended + 13'sd7;
 wire chunk_visible = (chunk_x_end >= 13'sd0) &&
@@ -373,7 +375,7 @@ always @(posedge clk) begin
         scroll_flip_latched <= 8'd0;
         sprite_x_base <= 12'sd0;
         sprite_x_chunks <= 5'd1;
-        sprite_code_row <= 17'd0;
+        sprite_code_row <= 18'd0;
         sprite_priority <= 4'd0;
         sprite_color <= 6'd0;
         sprite_flip_x <= 1'b0;
@@ -396,7 +398,7 @@ always @(posedge clk) begin
         stage0_flip_y_local <= 1'b0;
         process_hits_line <= 1'b0;
         process_x_chunks <= 5'd1;
-        process_code_base <= 17'd0;
+        process_code_base <= 18'd0;
         process_priority <= 4'd0;
         process_color <= 6'd0;
         process_effective_flip_x <= 1'b0;

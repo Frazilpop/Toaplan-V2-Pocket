@@ -5,6 +5,11 @@
 // clock enables, their ratios from the ROM image's header: the V25 at
 // 94.5 x v25_num / 189 MHz (25: 12.5 MHz on TP-022, 32: 16 MHz on TP-030),
 // the OKI at 94.5 x oki_inc / oki_wrap.
+//
+// The V25's map: TP-030, TP-022 and TP-027 put the YM2151 at 00000/1, the
+// OKI at 00004 and the shared RAM at 80000-87fff (mirrored to fffff);
+// TP-023 (tp023) the shared RAM at 00000-007ff, the YM2151 at 04000/1, the
+// OKI at 04002 and its own 32 KB ROM at 80000 (mirrored), read as rom_din.
 
 module dogyuun_sound #(
     parameter integer V25_BUS_PHASES_USE_CEN = 1,
@@ -24,6 +29,7 @@ module dogyuun_sound #(
     input      [11:0]           oki_wrap,
     input                       oki_pin7,
     input                       secure_mode,
+    input                       tp023,
     // The V25's input ports, active high as MAME's ports (inverted here as
     // MAME's .exor(0xff)): which DIP bank goes where is the board's.
     input      [7:0]            port_t,
@@ -37,6 +43,7 @@ module dogyuun_sound #(
     output     [7:0]            shared_dout,
     output                      shared_we,
     input      [7:0]            shared_din,
+    input      [7:0]            rom_din,
 
     output     [17:0]           oki_rom_addr,
     input      [7:0]            oki_rom_data,
@@ -63,9 +70,9 @@ module dogyuun_sound #(
     output signed [13:0]        debug_oki_sound
 );
 
-localparam [19:0] YM_ADDR  = 20'h00000;
-localparam [19:0] YM_DATA  = 20'h00001;
-localparam [19:0] OKI_DATA = 20'h00004;
+wire [19:0] YM_ADDR  = tp023 ? 20'h04000 : 20'h00000;
+wire [19:0] YM_DATA  = tp023 ? 20'h04001 : 20'h00001;
+wire [19:0] OKI_DATA = tp023 ? 20'h04002 : 20'h00004;
 wire sound_domain_reset = reset;
 reg  pause_held = 1'b0;
 wire pause_quiescent;
@@ -230,6 +237,7 @@ dogyuun_v25_cpu #(
     .reset_n           (v25_reset_n),
     .clock_enable      (v25_cen && !pause_freeze),
     .secure_mode       (secure_mode),
+    .tp023             (tp023),
     .port0_in          (~port_0),
     .port1_in          (~port_1),
     .portt_in          (~port_t),
@@ -251,7 +259,8 @@ wire v25_mem_active = !v25_bus_mreq_n && !v25_bus_mstb_n;
 wire v25_write_active = v25_mem_active && !v25_bus_r_w && v25_bus_doe;
 reg  v25_write_active_d = 1'b0;
 wire v25_write_start = v25_write_active && !v25_write_active_d;
-wire v25_shared_cs = v25_bus_addr[19];
+wire v25_shared_cs = tp023 ? (v25_bus_addr[19:11] == 9'd0) : v25_bus_addr[19];
+wire v25_rom_cs = tp023 && v25_bus_addr[19];
 
 assign shared_addr = v25_bus_addr[14:0];
 assign shared_dout = v25_bus_dout;
@@ -264,6 +273,8 @@ always @(*) begin
     if (v25_mem_active && v25_bus_r_w) begin
         if (v25_shared_cs)
             v25_bus_din = shared_din;
+        else if (v25_rom_cs)
+            v25_bus_din = rom_din;
         else if (v25_bus_addr == YM_DATA)
             v25_bus_din = ym_dout;
         else if (v25_bus_addr == OKI_DATA)

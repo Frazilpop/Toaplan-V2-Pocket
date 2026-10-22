@@ -30,6 +30,8 @@ module dogyuun_v25_cpu #(
     // Opcode decryption (the nitro table): on for TP-022, off for TP-030's
     // plain code, from the image header's table id.
     input             secure_mode,
+    // TP-023's map: the YM2151 and OKI at 04000-04002, not 00000-00004.
+    input             tp023,
 
     input      [7:0]  port0_in,
     input      [7:0]  port1_in,
@@ -273,10 +275,13 @@ wire base_arch_load = escape_timing_done &&
 wire cpu_arch_load = base_arch_load;
 wire cpu_clock_enable = clock_enable;
 wire bus_phase_advance = !BUS_PHASES_USE_CEN || clock_enable;
-wire txn_sound_write = txn_write &&
+wire txn_sound_write = txn_write && (tp023 ?
+                       (txn_addr == 20'h04000 ||
+                        txn_addr == 20'h04001 ||
+                        txn_addr == 20'h04002) :
                        (txn_addr == 20'h00000 ||
                         txn_addr == 20'h00001 ||
-                        txn_addr == 20'h00004);
+                        txn_addr == 20'h00004));
 wire [5:0] txn_byte_phases = BUS_BYTE_PHASES +
                              (txn_sound_write ?
                               SOUND_WRITE_EXTRA_PHASES : 0);

@@ -37,6 +37,10 @@
 //      - One clear cycle between HS and DE either way: the board's hsync sits
 //        inside a 64-pixel blanking window, so this holds by construction and
 //        is not re-checked here.
+//      - The scaler mode is chosen by the core: the first cycle after DE
+//        falls carries the end-of-line word "Set Scaler Slot" (function 0 in
+//        bits 2:0, the slot in bits 23:13), video.json's scaler_modes in
+//        order. Slot 0 is ROT270, slot 1 ROT0 (Knuckle Bash).
 
 `default_nettype none
 
@@ -45,6 +49,7 @@ module pocket_video (
     input  wire        ce_pix,
     input  wire        hs, vs, hblank, vblank,
     input  wire [7:0]  r, g, b,
+    input  wire [2:0]  scaler_slot,    // static once the ROM is loaded
 
     input  wire        clk_vid,        // 6.75 MHz, same PLL as clk
     output reg  [23:0] video_rgb,
@@ -99,7 +104,9 @@ module pocket_video (
         end
 
         video_de  <= s_de;
-        video_rgb <= s_de ? s_rgb : 24'h000000;
+        video_rgb <= s_de ? s_rgb :
+                     video_de ? {8'd0, scaler_slot, 10'd0, 3'b000} :
+                     24'h000000;
     end
 
     assign video_skip = 1'b0;

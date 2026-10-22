@@ -73,7 +73,7 @@ dogyuun_v25_cpu_ref u_ref (
 
 dogyuun_v25_cpu u_dut (
     .clk (clk), .reset (!reset_n), .reset_n (reset_n), .clock_enable (cen),
-    .secure_mode (secure_mode),
+    .secure_mode (secure_mode), .tp023 (1'b0),
     .port0_in (8'hff), .port1_in (8'h6f), .portt_in (8'hff),
     .bus_addr (b_addr), .bus_dout (b_dout), .bus_din (b_din),
     .bus_doe (b_doe), .bus_r_w (b_rw), .bus_mreq_n (b_mreq),
