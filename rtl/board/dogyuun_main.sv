@@ -7,7 +7,11 @@
 // reset alone (TP-023, whose V25 runs its own ROM). On TP-023 the 68000's
 // shared RAM is 2 KB of its own, and the 32 KB RAM the other boards share
 // holds the V25's ROM instead, written by the loader (audio_*) while the
-// board is in reset; the V25 reads it as sound_rom_dout.
+// board is in reset; the V25 reads it as sound_rom_dout. TP-026 (FixEight)
+// shares the 32 KB RAM at 280000, releases the V25 with bit 3 of a write to
+// 700000 (the 68000's RESET instruction holds it again, as MAME's reset_cb),
+// reads IN3 at 200008 and has Toaplan's text layer: its VRAM, line tables
+// and graphics RAM live here, read out through the tx_*_scan ports.
 module dogyuun_main #(
     parameter integer WRAM_AW = 15
 ) (
@@ -30,6 +34,7 @@ module dogyuun_main #(
     input      [15:0]  in1_data,
     input      [15:0]  in2_data,
     input      [15:0]  sys_data,
+    input      [15:0]  in3_data,
     input      [9:0]   hcnt,
     input      [8:0]   vcnt,
     input              irq4_start,
@@ -63,6 +68,16 @@ module dogyuun_main #(
     output     [7:0]   gp0_scroll_flip,
     output     [7:0]   gp1_scroll_flip,
 
+    input      [11:0]  tx_vram_scan_addr,
+    output     [15:0]  tx_vram_scan_dout,
+    input      [8:0]   tx_line_scan_addr,
+    output     [15:0]  tx_line_scan_dout,
+    input      [14:0]  tx_gfx_scan_addr,
+    output     [7:0]   tx_gfx_scan_dout,
+    output             tx_gfx_wr,        // a graphics byte written: its address
+    output     [14:0]  tx_gfx_wr_addr,   // and the byte it held before
+    output     [7:0]   tx_gfx_wr_old,
+
     output             irq4
 );
 
@@ -80,6 +95,7 @@ wire        cpu_dtack_n;
 wire        cpu_fc0;
 wire        cpu_fc1;
 wire        cpu_fc2;
+wire        cpu_reset_out_n;
 wire        cpu_vpa_n = ~&{cpu_fc0, cpu_fc1, cpu_fc2, ~cpu_as_n};
 wire        cpu_iack = !cpu_as_n && cpu_fc0 && cpu_fc1 && cpu_fc2;
 
@@ -88,8 +104,10 @@ wire cpu_read = cpu_bus_active && cpu_rw;
 wire cpu_write = cpu_bus_active && !cpu_rw;
 wire cpu_core_reset = rst;
 localparam [2:0] BOARD_TP023 = 3'd2;
+localparam [2:0] BOARD_TP026 = 3'd3;
 localparam [2:0] BOARD_TP027 = 3'd4;
 wire tp023 = board == BOARD_TP023;
+wire tp026 = board == BOARD_TP026;
 
 wire rom_bus_cs;
 wire rom_read_cs;
@@ -97,6 +115,11 @@ wire wram_cs;
 wire in1_cs;
 wire in2_cs;
 wire sys_cs;
+wire in3_cs;
+wire txvram_cs;
+wire txline_cs;
+wire txgfx_cs;
+wire v25_rst_cs;
 wire sound_ctrl_cs;
 wire shared_cs;
 wire gp0_cs;
@@ -111,6 +134,7 @@ wire unmapped_cs;
 dogyuun_main_decode #(.WRAM_AW(WRAM_AW)) u_decode (
     .wram_64k      (wram_64k),
     .tp023         (tp023),
+    .tp026         (tp026),
     .two_gp        (two_gp),
     .addr          (cpu_addr8),
     .bus_active    (cpu_bus_active),
@@ -121,12 +145,17 @@ dogyuun_main_decode #(.WRAM_AW(WRAM_AW)) u_decode (
     .in1_cs        (in1_cs),
     .in2_cs        (in2_cs),
     .sys_cs        (sys_cs),
+    .in3_cs        (in3_cs),
     .sound_ctrl_cs (sound_ctrl_cs),
     .shared_cs     (shared_cs),
     .gp0_cs        (gp0_cs),
     .palette_cs    (palette_cs),
     .gp1_cs        (gp1_cs),
     .vcount_cs     (vcount_cs),
+    .txvram_cs     (txvram_cs),
+    .txline_cs     (txline_cs),
+    .txgfx_cs      (txgfx_cs),
+    .v25_rst_cs    (v25_rst_cs),
     .io_cs         (io_cs),
     .gp_cs         (gp_cs),
     .mapped_cs     (mapped_cs),
@@ -271,7 +300,7 @@ fx68k u_main68k (
     .FC1      (cpu_fc1),
     .FC2      (cpu_fc2),
     .BGn      (),
-    .oRESETn  (),
+    .oRESETn  (cpu_reset_out_n),
     .oHALTEDn (),
     .DTACKn   (cpu_dtack_n),
     .VPAn     (cpu_vpa_n),
@@ -307,6 +336,27 @@ wire [7:0] small_shared_dout;
 wire [7:0] big_sound_q;
 wire [7:0] small_sound_q;
 wire [15:0] palette_dout;
+wire [15:0] txvram_dout;
+wire [15:0] txline_dout;
+wire [7:0]  txgfx_dout;
+wire [1:0] txvram_we = {
+    ack_now && txvram_cs && cpu_write && !cpu_uds_n,
+    ack_now && txvram_cs && cpu_write && !cpu_lds_n
+};
+wire [1:0] txline_we = {
+    ack_now && txline_cs && cpu_write && !cpu_uds_n,
+    ack_now && txline_cs && cpu_write && !cpu_lds_n
+};
+// Only the low byte of each graphics word is pixels (MAME's layout reads
+// nibbles 0,1,4,5,8,9,12,13 of a 64-bit row); the game writes the high
+// byte as ff, and its RAM test reads the low byte alone, so the high byte
+// reads back as ff.
+wire txgfx_we = ack_now && txgfx_cs && cpu_write && !cpu_lds_n;
+// The byte under the write, for the text layer's undo log: the RAM's
+// port 0 has read the cycle's address since AS fell.
+assign tx_gfx_wr      = txgfx_we;
+assign tx_gfx_wr_addr = cpu_addr8[15:1];
+assign tx_gfx_wr_old  = txgfx_dout;
 jtframe_dual_ram16 #(.AW(WRAM_AW)) u_wram (
     .clk0  (clk),
     .data0 (cpu_dout),
@@ -364,6 +414,48 @@ jtframe_dual_ram16 #(.AW(11)) u_palette_ram (
     .q1    (palette_scan_dout)
 );
 
+// TP-026's text layer: 4K words of VRAM (the 64 x 32 map in the first 2K;
+// the game RAM-tests all of it), the line select (0-255) and line scroll
+// (256-511) words, and 32K bytes of graphics.
+jtframe_dual_ram16 #(.AW(12)) u_txvram (
+    .clk0  (clk),
+    .data0 (cpu_dout),
+    .addr0 (cpu_addr8[12:1]),
+    .we0   (txvram_we),
+    .q0    (txvram_dout),
+    .clk1  (clk),
+    .data1 (16'h0000),
+    .addr1 (tx_vram_scan_addr),
+    .we1   (2'b00),
+    .q1    (tx_vram_scan_dout)
+);
+
+jtframe_dual_ram16 #(.AW(9)) u_txline (
+    .clk0  (clk),
+    .data0 (cpu_dout),
+    .addr0 ({cpu_addr8[12], cpu_addr8[8:1]}),
+    .we0   (txline_we),
+    .q0    (txline_dout),
+    .clk1  (clk),
+    .data1 (16'h0000),
+    .addr1 (tx_line_scan_addr),
+    .we1   (2'b00),
+    .q1    (tx_line_scan_dout)
+);
+
+jtframe_dual_ram #(.DW(8), .AW(15)) u_txgfx (
+    .clk0  (clk),
+    .data0 (cpu_dout[7:0]),
+    .addr0 (cpu_addr8[15:1]),
+    .we0   (txgfx_we),
+    .q0    (txgfx_dout),
+    .clk1  (clk),
+    .data1 (8'h00),
+    .addr1 (tx_gfx_scan_addr),
+    .we1   (1'b0),
+    .q1    (tx_gfx_scan_dout)
+);
+
 wire [15:0] cpu_din_mux =
     normal_rom_read_cs ? rom_data :
     wram_cs ? wram_dout :
@@ -374,6 +466,10 @@ wire [15:0] cpu_din_mux =
     in1_cs ? in1_data :
     in2_cs ? in2_data :
     sys_cs ? sys_data :
+    in3_cs ? in3_data :
+    txvram_cs ? txvram_dout :
+    txline_cs ? txline_dout :
+    txgfx_cs ? {8'hff, txgfx_dout} :
     vcount_cs ? vcount_data :
     16'h0000;   // unmapped and write-only: MAME's 68000 reads 0
 
@@ -397,13 +493,16 @@ always @(posedge clk) begin
     end
 end
 
+reg tp026_v25_run = 1'b0;
 assign v25_reset_n = tp023 ? 1'b1 :
+                     tp026 ? tp026_v25_run :
                      (board == BOARD_TP027) ? coin_control[4] : coin_control[5];
 
 always @(posedge clk) begin
     if (rst) begin
         ack_seen <= 1'b0;
         coin_control <= 8'h00;
+        tp026_v25_run <= 1'b0;
     end else begin
         if (!cpu_bus_active)
             ack_seen <= 1'b0;
@@ -412,6 +511,12 @@ always @(posedge clk) begin
 
         if (ack_now && sound_ctrl_cs && cpu_write && !cpu_lds_n)
             coin_control <= cpu_dout[7:0];
+        // 700000 is byte-wide with a 16-bit chip select (MAME's umask 00ff,
+        // cswidth 16): either lane's write lands, the byte the 68000 drove.
+        if (ack_now && v25_rst_cs)
+            tp026_v25_run <= !cpu_lds_n ? cpu_dout[3] : cpu_dout[11];
+        if (!cpu_reset_out_n)
+            tp026_v25_run <= 1'b0;
     end
 end
 

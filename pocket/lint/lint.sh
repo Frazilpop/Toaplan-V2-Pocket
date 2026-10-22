@@ -31,7 +31,7 @@ verilator --lint-only -Wall -Wno-fatal --top-module core_top \
   "$tp"/fx68k/hdl/verilator/*.sv "$tp"/jt6295/hdl/*.v \
   "$tp/IKAOPM/src/IKAOPM.v" "$tp"/IKAOPM/src/IKAOPM_modules/*.v \
   "$fpga/core/pocket_sync.sv" "$fpga/core/pocket_rom_loader.sv" \
-  "$fpga/core/pocket_video.sv" "$fpga/core/pocket_diag.sv" \
+  "$fpga/core/pocket_video.sv" "$fpga/core/pocket_diag.sv" "$fpga/core/pocket_nvram.sv" \
   "$fpga/core/core_top.v" "$@" > "$out" 2>&1 || { cat "$out"; exit 1; }
 if grep -E "^%(Warning|Error)" "$out" | grep -E "pocket/src/fpga/core/(core_top|pocket_)"; then
     exit 1

@@ -3,12 +3,16 @@
 // header) maps all 64 KB (TP-030), else 16 KB. TP-030, TP-022 and TP-027
 // share the map (shared RAM at 210000, I/O at 2000xx); TP-023 (Knuckle Bash)
 // has 2 KB of shared RAM at 200000 and its I/O at 2080xx. The second GP9001
-// at 500000 is there only on a two-chip board (two_gp).
+// at 500000 is there only on a two-chip board (two_gp). TP-026 (FixEight)
+// has IN1/IN2/IN3/SYS at 200000/4/8/10, the shared RAM at 280000, the text
+// layer at 500000-5031ff and its graphics RAM at 600000, the V25's reset at
+// 700000 and the VDP count at 800000.
 module dogyuun_main_decode #(
     parameter integer WRAM_AW = 13
 ) (
     input             wram_64k,
     input             tp023,
+    input             tp026,
     input             two_gp,
     input      [23:0] addr,
     input             bus_active,
@@ -20,12 +24,17 @@ module dogyuun_main_decode #(
     output            in1_cs,
     output            in2_cs,
     output            sys_cs,
+    output            in3_cs,
     output            sound_ctrl_cs,
     output            shared_cs,
     output            gp0_cs,
     output            palette_cs,
     output            gp1_cs,
     output            vcount_cs,
+    output            txvram_cs,     // TP-026: 500000-501fff
+    output            txline_cs,     // 502000-5021ff select, 503000-5031ff scroll
+    output            txgfx_cs,      // 600000-60ffff
+    output            v25_rst_cs,    // 700000 (writes)
     output            io_cs,
     output            gp_cs,
     output            mapped_cs,
@@ -41,15 +50,18 @@ assign wram_cs       = bus_active &&
                        (addr >= 24'h100000) &&
                        (addr < 24'h100000 + (wram_64k ? (24'd2 << WRAM_AW) : 24'h004000));
 assign in1_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == io_base + 24'h10);
+                       ((addr & 24'hfffffe) == io_base + (tp026 ? 24'h00 : 24'h10));
 assign in2_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == io_base + 24'h14);
+                       ((addr & 24'hfffffe) == io_base + (tp026 ? 24'h04 : 24'h14));
+assign in3_cs        = read_cycle && tp026 &&
+                       ((addr & 24'hfffffe) == 24'h200008);
 assign sys_cs        = read_cycle &&
-                       ((addr & 24'hfffffe) == io_base + 24'h18);
+                       ((addr & 24'hfffffe) == io_base + (tp026 ? 24'h10 : 24'h18));
 assign sound_ctrl_cs = bus_active &&
                        ((addr & 24'hfffffe) == io_base + 24'h1c);
 assign shared_cs     = bus_active && (tp023 ?
-                       (addr[23:12] == 12'h200) :
+                       (addr[23:12] == 12'h200) : tp026 ?
+                       (addr[23:16] == 8'h28) :
                        ((addr >= 24'h210000) && (addr < 24'h220000)));
 assign gp0_cs        = bus_active &&
                        (addr >= 24'h300000) && (addr < 24'h30000e);
@@ -58,12 +70,19 @@ assign palette_cs    = bus_active &&
 assign gp1_cs        = bus_active && two_gp &&
                        (addr >= 24'h500000) && (addr < 24'h50000e);
 assign vcount_cs     = read_cycle &&
+                       ((addr & 24'hfffffe) == (tp026 ? 24'h800000 : 24'h700000));
+assign txvram_cs     = bus_active && tp026 && (addr[23:13] == 11'b0101_0000_000);
+assign txline_cs     = bus_active && tp026 &&
+                       ((addr[23:9] == 15'h2810) || (addr[23:9] == 15'h2818));
+assign txgfx_cs      = bus_active && tp026 && (addr[23:16] == 8'h60);
+assign v25_rst_cs    = bus_active && !rw && tp026 &&
                        ((addr & 24'hfffffe) == 24'h700000);
 
-assign io_cs = in1_cs || in2_cs || sys_cs || sound_ctrl_cs || vcount_cs;
+assign io_cs = in1_cs || in2_cs || in3_cs || sys_cs || sound_ctrl_cs ||
+               vcount_cs || v25_rst_cs;
 assign gp_cs = gp0_cs || gp1_cs;
 assign mapped_cs = rom_cs || wram_cs || shared_cs || gp_cs || palette_cs ||
-                   io_cs;
+                   io_cs || txvram_cs || txline_cs || txgfx_cs;
 assign unmapped_cs = bus_active && !mapped_cs;
 
 endmodule

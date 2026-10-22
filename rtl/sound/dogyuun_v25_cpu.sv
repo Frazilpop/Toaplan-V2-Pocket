@@ -30,12 +30,17 @@ module dogyuun_v25_cpu #(
     // Opcode decryption (the nitro table): on for TP-022, off for TP-030's
     // plain code, from the image header's table id.
     input             secure_mode,
-    // TP-023's map: the YM2151 and OKI at 04000-04002, not 00000-00004.
+    // TP-026's ts001turbo table instead of nitro.
+    input             ts001_mode,
+    // TP-023's map: the YM2151 and OKI at 04000-04002, not 00000-00004;
+    // TP-026's at 0000a-0000c.
     input             tp023,
+    input             tp026,
 
     input      [7:0]  port0_in,
     input      [7:0]  port1_in,
     input      [7:0]  portt_in,
+    output     [7:0]  port0_out,   // P0's latch (TP-026: the 93C46's lines)
 
     output     [19:0] bus_addr,
     output     [7:0]  bus_dout,
@@ -279,6 +284,10 @@ wire txn_sound_write = txn_write && (tp023 ?
                        (txn_addr == 20'h04000 ||
                         txn_addr == 20'h04001 ||
                         txn_addr == 20'h04002) :
+                       tp026 ?
+                       (txn_addr == 20'h0000a ||
+                        txn_addr == 20'h0000b ||
+                        txn_addr == 20'h0000c) :
                        (txn_addr == 20'h00000 ||
                         txn_addr == 20'h00001 ||
                         txn_addr == 20'h00004));
@@ -361,6 +370,7 @@ assign escape_pop = escape_byte_valid &&
 
 assign halted = arch_halted;
 assign fault = fault_latch;
+assign port0_out = p0_latch;
 assign debug_pc = instruction_next_pc;
 assign state_idle = reset_n &&
                     instruction_idle &&
@@ -448,8 +458,11 @@ function automatic [7:0] internal_read_byte;
             end
         end else begin
             case (index)
-                9'h100: internal_read_byte = (p0_latch & ~pm0_reg) |
-                                                   (port0_in & pm0_reg);
+                // TP-026: MAME's p0_r, the port as it stands whatever PM0
+                // says (the 93C46's lines read 0, DO in bit 7).
+                9'h100: internal_read_byte = tp026 ? port0_in :
+                                             (p0_latch & ~pm0_reg) |
+                                             (port0_in & pm0_reg);
                 9'h108: internal_read_byte = (p1_latch & ~pm1_reg) |
                                                    (port1_in & pm1_reg);
                 9'h110: internal_read_byte = p2_latch & ~pm2_reg;
@@ -839,6 +852,7 @@ dogyuun_z8086 u_cpu (
     .nmi                    (1'b0),
     .inta                   (),
     .secure_mode            (secure_mode),
+    .ts001_mode             (ts001_mode),
     .fetch_hold             (base_fetch_hold),
     .instruction_start_hold (base_instruction_start_hold),
     .arch_load              (cpu_arch_load),

@@ -8,7 +8,8 @@
 module dogyuun_z8086 #(
     parameter bit POPF_HI_IS_F = 1'b1,
     parameter UCODE_FILE = "rtl/sound/v25_compact/ucode.hex",
-    parameter NITRO_FILE = "rtl/sound/dogyuun_nitro_decryption.hex"
+    parameter NITRO_FILE = "rtl/sound/dogyuun_nitro_decryption.hex",
+    parameter TS001_FILE = "rtl/sound/dogyuun_ts001turbo_decryption.hex"
 ) (
     input             clk,
     input             clock_enable,
@@ -26,6 +27,7 @@ module dogyuun_z8086 #(
     input             nmi,
     output reg        inta,  // interrupt acknowledge, expects intr num on din and ready pulse
     input             secure_mode,
+    input             ts001_mode,    // TP-026's ts001turbo table instead
 
     input             fetch_hold,
     input             instruction_start_hold,
@@ -257,13 +259,16 @@ wire       q_empty;
 reg        escape_active;
 reg  [7:0] escape_lead;
 reg  [7:0] nitro_table [0:255];
-wire [7:0] opcode_bus = secure_mode ? nitro_table[q_bus] : q_bus;
+reg  [7:0] ts001_table [0:255];
+wire [7:0] opcode_bus = ts001_mode  ? ts001_table[q_bus] :
+                        secure_mode ? nitro_table[q_bus] : q_bus;
 wire       escape_start = opcode_bus == 8'h0f || opcode_bus == 8'h68 ||
                           opcode_bus == 8'h6a || opcode_bus == 8'hc0 ||
                           opcode_bus == 8'hc1;
 
 initial begin
     $readmemh(NITRO_FILE, nitro_table);
+    $readmemh(TS001_FILE, ts001_table);
 end
 
 assign v25_escape_active = escape_active;
