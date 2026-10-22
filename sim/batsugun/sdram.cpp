@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>
 
 #if __has_include("UUT.h")
     #include "UUT.h"
@@ -106,6 +107,42 @@ void SDRAMModel::reset() {
         bank.active = false;
         bank.row_base = 0;
     }
+}
+
+void SDRAMModel::save(const Put& put) const {
+    put(&colw_, sizeof colw_);
+    put(&burst_len_, sizeof burst_len_);
+    put(&cas_latency_, sizeof cas_latency_);
+    put(&burst_full_page_, sizeof burst_full_page_);
+    put(&burst_interleaved_, sizeof burst_interleaved_);
+    put(&write_burst_single_, sizeof write_burst_single_);
+    put(&refresh_window_active_, sizeof refresh_window_active_);
+    put(&refresh_count_, sizeof refresh_count_);
+    put(&refresh_window_start_ps_, sizeof refresh_window_start_ps_);
+    put(&last_refresh_ps_, sizeof last_refresh_ps_);
+    put(read_dqm_.data(), sizeof read_dqm_);
+    put(banks_state_.data(), sizeof banks_state_);
+    put(&burst_, sizeof burst_);
+    for( const auto& bank : banks_ ) put(bank.data(), bank.size() * sizeof bank[0]);
+}
+
+void SDRAMModel::load(const Get& get) {
+    int colw = 0;
+    get(&colw, sizeof colw);
+    if( colw != colw_ ) throw std::runtime_error("SDRAM checkpoint: column width differs");
+    get(&burst_len_, sizeof burst_len_);
+    get(&cas_latency_, sizeof cas_latency_);
+    get(&burst_full_page_, sizeof burst_full_page_);
+    get(&burst_interleaved_, sizeof burst_interleaved_);
+    get(&write_burst_single_, sizeof write_burst_single_);
+    get(&refresh_window_active_, sizeof refresh_window_active_);
+    get(&refresh_count_, sizeof refresh_count_);
+    get(&refresh_window_start_ps_, sizeof refresh_window_start_ps_);
+    get(&last_refresh_ps_, sizeof last_refresh_ps_);
+    get(read_dqm_.data(), sizeof read_dqm_);
+    get(banks_state_.data(), sizeof banks_state_);
+    get(&burst_, sizeof burst_);
+    for( auto& bank : banks_ ) get(bank.data(), bank.size() * sizeof bank[0]);
 }
 
 void SDRAMModel::set_verbose(bool enable) {

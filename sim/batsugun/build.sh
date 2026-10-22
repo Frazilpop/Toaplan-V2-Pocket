@@ -8,7 +8,7 @@ J=rtl/jtframe
 mkdir -p build/obj_batsugun build/tmp
 export TMPDIR="$PWD/build/tmp"
 verilator --cc --exe --build -j 0 -O3 --x-assign fast --x-initial 0 \
-  -Wno-fatal -Wno-lint -Wno-style -Wno-MULTIDRIVEN -Wno-TIMESCALEMOD \
+  --savable -Wno-fatal -Wno-lint -Wno-style -Wno-MULTIDRIVEN -Wno-TIMESCALEMOD \
   -DJTFRAME_BUTTONS=3 -DJTFRAME_MCLK=48000000 \
   --top-module tb_batsugun --Mdir "${OBJ:-build/obj_batsugun}" -o tb_batsugun \
   -CFLAGS "-O2 -std=c++17" "$@" \
