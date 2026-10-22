@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 class UUT;
@@ -48,6 +49,12 @@ public:
     void dump_bank_bytes(int bank, uint8_t* data, std::size_t len, bool swap_bytes = true) const;
 
     SDRAMOutputs tick(const SDRAMPins& pins, std::uint64_t simtime_ps = 0);
+
+    // The whole state, banks included, for the harness's checkpoints
+    using Put = std::function<void(const void*, std::size_t)>;
+    using Get = std::function<void(void*, std::size_t)>;
+    void save(const Put& put) const;
+    void load(const Get& get);
 
 private:
     enum BurstKind {

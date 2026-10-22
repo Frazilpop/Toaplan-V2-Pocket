@@ -23,6 +23,13 @@
 //                          clocks from the release of reset: the 68000's
 //                          writes to 20001c, the V25's writes to shared 7800
 //                          and the 68000's reads of it when they change
+//     --save FILE          a checkpoint of the whole run (the board, the
+//                          SDRAM, the harness) at every --save-every'th
+//                          frame (default 100), written over the last one
+//     --restore FILE       go on from a checkpoint to <frames>: stats.csv
+//                          is cut back to the checkpoint's frame and
+//                          appended to; --trace, --v25-trace, --events and
+//                          --wav start afresh at that frame
 //
 // Frames count from the release of reset, which is where MAME's power-on is:
 // the raster and the 68000 start together. Frame N is the picture finished
@@ -33,6 +40,7 @@
 
 #include "Vtb_batsugun.h"
 #include "verilated.h"
+#include "verilated_save.h"
 #include "sdram.h"
 
 #include <cstdio>
@@ -87,7 +95,9 @@ int main(int argc, char** argv) {
     std::string outdir = argv[3];
     std::set<int> dumps;
     const char *trace_path = nullptr, *v25_path = nullptr, *wav_path = nullptr,
-               *inputs_path = nullptr, *events_path = nullptr;
+               *inputs_path = nullptr, *events_path = nullptr,
+               *save_path = nullptr, *restore_path = nullptr;
+    int save_every = 100;
     long trace_count = 0;
     bool data_only = false, stream = false;
     for (int i = 4; i < argc; i++) {
@@ -114,6 +124,9 @@ int main(int argc, char** argv) {
         else if (a == "--stream") stream = true;
         else if (a == "--inputs") inputs_path = next();
         else if (a == "--events") events_path = next();
+        else if (a == "--save") save_path = next();
+        else if (a == "--save-every") save_every = atoi(next());
+        else if (a == "--restore") restore_path = next();
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     mkdir(outdir.c_str(), 0755);
@@ -158,6 +171,8 @@ int main(int argc, char** argv) {
         cyc++;
     };
 
+    uint64_t cyc0 = 0;
+    if (!restore_path) {
     for (int i = 0; i < 32; i++) tick();
     t->cold_rst = 0;
     // The SDRAM's power-up sequence
@@ -220,7 +235,8 @@ int main(int argc, char** argv) {
     fprintf(stderr, "image loaded (%s) at clock %llu\n", stream ? "streamed" : "header streamed, regions preloaded",
             (unsigned long long)cyc);
     t->rst = 0;
-    uint64_t cyc0 = cyc;
+    cyc0 = cyc;
+    }
 
     // ------------------------------------------------------------- inputs
     struct Step { int frame; std::string name; int val; };
@@ -280,10 +296,63 @@ int main(int argc, char** argv) {
     unsigned missing_max = 0;
     uint64_t vs_ready = 0, vs_color = 0, vs_pal = 0;
     uint64_t dbg_rd[4] = {0}, dbg_ack[4] = {0}, dbg_rdy[4] = {0}, dbg_busy[4] = {0}, dbg_valid[4] = {0};
-    FILE* stats = fopen((outdir + "/stats.csv").c_str(), "w");
-    fprintf(stats, "frame,clocks,m68_cycles,v25_writes,v25_pc,deadline_miss,m68_wait_backlog_max,px_line_ready,px_color_nz,px_palette_nz\n");
 
-    apply_inputs(0);
+    // Checkpoints: the model as Verilator saves it, then the harness's
+    // own state and the SDRAM model's.
+#define LOOP_STATE(X) X(cyc) X(cyc0) X(frame) X(x) X(y) X(prev_hb) X(prev_vb) X(as_prev) \
+    X(v25_act_prev) X(v25_rst_prev) X(sample_prev) X(v25_rd) X(v25_a) X(v25_d) X(cyc_addr) \
+    X(cyc_mask) X(cyc_rd) X(cyc_iack) X(cyc_dout) X(v25_writes) X(m68_cycles) X(miss) \
+    X(missing_max) X(vs_ready) X(vs_color) X(vs_pal) X(plan_i) X(ev_last_7800) X(traced)
+    static const uint32_t CKPT_MAGIC = 0x54504b31;   // "TPK1"
+    auto save = [&]() {
+        std::string tmp = std::string(save_path) + ".tmp";
+        {
+            VerilatedSave os;
+            os.open(tmp.c_str());
+            if (!os.isOpen()) { perror(tmp.c_str()); exit(1); }
+            os << *t;
+            os.write(&CKPT_MAGIC, sizeof CKPT_MAGIC);
+#define PUT(v) os.write(&v, sizeof v);
+            LOOP_STATE(PUT)
+#undef PUT
+            os.write(img.data(), img.size());
+            sdram.save([&](const void* p, size_t n) { os.write(p, n); });
+            os.close();
+        }
+        if (rename(tmp.c_str(), save_path)) { perror(save_path); exit(1); }
+    };
+    std::string stats_path = outdir + "/stats.csv";
+    FILE* stats;
+    if (restore_path) {
+        VerilatedRestore os;
+        os.open(restore_path);
+        if (!os.isOpen()) { perror(restore_path); return 1; }
+        os >> *t;
+        uint32_t magic = 0;
+        os.read(&magic, sizeof magic);
+        if (magic != CKPT_MAGIC) { fprintf(stderr, "%s: not a checkpoint\n", restore_path); return 1; }
+#define GET(v) os.read(&v, sizeof v);
+        LOOP_STATE(GET)
+#undef GET
+        os.read(img.data(), img.size());
+        sdram.load([&](void* p, size_t n) { os.read(p, n); });
+        os.close();
+        // stats.csv as it stood at the checkpoint
+        std::vector<std::string> keep;
+        if (FILE* f = fopen(stats_path.c_str(), "r")) {
+            char line[512];
+            while (fgets(line, sizeof line, f))
+                if (keep.empty() || atoi(line) <= frame) keep.push_back(line);
+            fclose(f);
+        }
+        stats = fopen(stats_path.c_str(), "w");
+        for (auto& l : keep) fputs(l.c_str(), stats);
+        fprintf(stderr, "restored at frame %d, clock %llu\n", frame, (unsigned long long)cyc);
+    } else {
+        stats = fopen(stats_path.c_str(), "w");
+        fprintf(stats, "frame,clocks,m68_cycles,v25_writes,v25_pc,deadline_miss,m68_wait_backlog_max,px_line_ready,px_color_nz,px_palette_nz\n");
+        apply_inputs(0);
+    }
     while (frame < frames) {
         tick();
 
@@ -391,6 +460,10 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "frame %d of %d\n", frame, frames);
                 apply_inputs(frame);
                 x = 0; y = 0;
+                if (save_path && save_every > 0 && frame % save_every == 0) {
+                    prev_hb = hb; prev_vb = vb;
+                    save();
+                }
             }
             prev_hb = hb; prev_vb = vb;
         }
