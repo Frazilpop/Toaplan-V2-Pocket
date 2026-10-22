@@ -20,6 +20,13 @@
 //                          loader, the other regions written straight into
 //                          the SDRAM model, as the loader would)
 //     --inputs FILE        "<frame> coin=1 start=1 up=0 b1=1 ..." lines
+//                          (player 1; p2_/p3_ before a name for players 2
+//                          and 3: p2_coin, p3_start, p3_b1 ...)
+//     --nv-in FILE         FixEight: 128 bytes written into the 93C46 after
+//                          the image (as APF writes a .sav: MAME's nvram
+//                          file order, each word low byte first)
+//     --nv-out FILE        FixEight: the 93C46's 128 bytes at the end, in
+//                          the same order
 //     --events FILE        tools/mame_toaplan2_events.lua's events, timed in
 //                          clocks from the release of reset: the 68000's
 //                          writes to 20001c, the V25's writes to shared 7800
@@ -97,7 +104,8 @@ int main(int argc, char** argv) {
     std::set<int> dumps;
     const char *trace_path = nullptr, *v25_path = nullptr, *wav_path = nullptr,
                *inputs_path = nullptr, *events_path = nullptr,
-               *save_path = nullptr, *restore_path = nullptr;
+               *save_path = nullptr, *restore_path = nullptr,
+               *nv_in_path = nullptr, *nv_out_path = nullptr;
     int save_every = 100;
     long trace_count = 0;
     bool data_only = false, stream = false;
@@ -128,6 +136,8 @@ int main(int argc, char** argv) {
         else if (a == "--save") save_path = next();
         else if (a == "--save-every") save_every = atoi(next());
         else if (a == "--restore") restore_path = next();
+        else if (a == "--nv-in") nv_in_path = next();
+        else if (a == "--nv-out") nv_out_path = next();
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     mkdir(outdir.c_str(), 0755);
@@ -153,7 +163,8 @@ int main(int argc, char** argv) {
 
     t->clk = 0; t->rst = 1; t->cold_rst = 1;
     t->ioctl_rom = 0; t->ioctl_wr = 0; t->ioctl_addr = 0; t->ioctl_dout = 0;
-    t->joy1_n = 0x7f; t->joy2_n = 0x7f; t->start_n = 0xf; t->coin_n = 0xf;
+    t->joy1_n = 0x7f; t->joy2_n = 0x7f; t->joy3_n = 0x7f;
+    t->nv_addr = 0; t->nv_din = 0; t->nv_we = 0; t->start_n = 0xf; t->coin_n = 0xf;
     t->service_n = 1; t->test_n = 1; t->pause_n = 1; t->dipsw = 0;
     t->sdram_dq = 0;
 
@@ -199,10 +210,13 @@ int main(int argc, char** argv) {
             fprintf(stderr, "loading %u of %u KB\n", a >> 10, img_len >> 10);
     }
     // TP-023's V25 ROM goes into block RAM through the loader's audio port,
-    // so the audiocpu region is always streamed (32 KB).
+    // and TP-026's EEPROM into the 93C46, so the audiocpu and eeprom regions
+    // are always streamed (32 KB, 128 bytes).
     if (!stream) {
-        uint32_t off = le32(rom, 0x28), len = le32(rom, 0x2c);
-        for (uint32_t k = 0; k < len; k++) send(off + k, rom[off + k]);
+        for (int r : {1, 5}) {
+            uint32_t off = le32(rom, 0x20 + 8 * r), len = le32(rom, 0x24 + 8 * r);
+            for (uint32_t k = 0; k < len; k++) send(off + k, rom[off + k]);
+        }
     }
     t->ioctl_rom = 0;
     for (int i = 0; i < 100000 && t->dwnld_busy; i++) tick();
@@ -239,6 +253,18 @@ int main(int argc, char** argv) {
                 t->ld_cfg_valid, t->ld_range_error, t->ld_overflow_error);
         return 1;
     }
+    if (nv_in_path) {
+        // As pocket_nvram writes a save: word w = file bytes {2w + 1, 2w}.
+        FILE* f = fopen(nv_in_path, "rb");
+        if (!f) { perror(nv_in_path); return 1; }
+        uint8_t b[128];
+        if (fread(b, 1, 128, f) != 128) { fprintf(stderr, "%s: not 128 bytes\n", nv_in_path); return 1; }
+        fclose(f);
+        for (int w = 0; w < 64; w++) {
+            t->nv_addr = w; t->nv_din = b[2 * w] | (b[2 * w + 1] << 8); t->nv_we = 1; tick();
+        }
+        t->nv_we = 0; tick();
+    }
     fprintf(stderr, "image loaded (%s) at clock %llu\n", stream ? "streamed" : "header streamed, regions preloaded",
             (unsigned long long)cyc);
     t->rst = 0;
@@ -272,12 +298,22 @@ int main(int argc, char** argv) {
             const Step& s = plan[plan_i++];
             // joystick = {B3,B2,B1,U,D,L,R}, active low (dogyuun_inputs)
             static const char* names[] = {"right", "left", "down", "up", "b1", "b2", "b3"};
+            int pl = 0;
+            std::string n = s.name;
+            if (n.size() > 3 && n[0] == 'p' && (n[1] == '2' || n[1] == '3') && n[2] == '_') {
+                pl = n[1] - '1'; n = n.substr(3);
+            }
+            auto set = [&](auto& port, unsigned bit) {
+                if (s.val) port &= ~(1u << bit); else port |= 1u << bit;
+            };
             for (int b = 0; b < 7; b++)
-                if (s.name == names[b]) {
-                    if (s.val) t->joy1_n &= ~(1u << b); else t->joy1_n |= 1u << b;
+                if (n == names[b]) {
+                    if (pl == 0) set(t->joy1_n, b);
+                    else if (pl == 1) set(t->joy2_n, b);
+                    else set(t->joy3_n, b);
                 }
-            if (s.name == "coin")  { if (s.val) t->coin_n &= ~1u; else t->coin_n |= 1u; }
-            if (s.name == "start") { if (s.val) t->start_n &= ~1u; else t->start_n |= 1u; }
+            if (n == "coin")  set(t->coin_n, pl);
+            if (n == "start") set(t->start_n, pl);
             if (s.name == "service") t->service_n = !s.val;
             if (s.name == "test")    t->test_n = !s.val;
             if (s.name == "pause")   t->pause_n = !s.val;
@@ -474,6 +510,17 @@ int main(int argc, char** argv) {
             }
             prev_hb = hb; prev_vb = vb;
         }
+    }
+    if (nv_out_path) {
+        FILE* f = fopen(nv_out_path, "wb");
+        if (!f) { perror(nv_out_path); return 1; }
+        for (int w = 0; w < 64; w++) {
+            t->nv_addr = w; tick(); tick();
+            uint16_t v = t->nv_dout;
+            uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)};
+            fwrite(b, 1, 2, f);
+        }
+        fclose(f);
     }
     if (trace) fclose(trace);
     if (v25) fclose(v25);

@@ -22,12 +22,18 @@ module tb_batsugun (
 
     input      [6:0]   joy1_n,      // {B3,B2,B1,U,D,L,R}, active low
     input      [6:0]   joy2_n,
+    input      [6:0]   joy3_n,
     input      [3:0]   start_n,
     input      [3:0]   coin_n,
     input              service_n,
     input              test_n,
     input              pause_n,
     input      [31:0]  dipsw,
+    // the 93C46's words, as the Pocket's save slot reaches them
+    input      [5:0]   nv_addr,
+    input      [15:0]  nv_din,
+    input              nv_we,
+    output     [15:0]  nv_dout,
 
     output     [7:0]   red,
     output     [7:0]   green,
@@ -124,7 +130,7 @@ dogyuun_game #(.AW(AW)) u_game (
     .coin       (coin_n),
     .joystick1  (joy1_n),
     .joystick2  (joy2_n),
-    .joystick3  (7'h7f),
+    .joystick3  (joy3_n),
     .joystick4  (7'h7f),
     .joyana_l1  (16'd0), .joyana_l2 (16'd0), .joyana_l3 (16'd0), .joyana_l4 (16'd0),
     .joyana_r1  (16'd0), .joyana_r2 (16'd0), .joyana_r3 (16'd0), .joyana_r4 (16'd0),
@@ -175,7 +181,16 @@ dogyuun_game #(.AW(AW)) u_game (
     .snd_vol    (8'hff),
     .snd_vu     (),
     .snd_peak   (),
-    .gfx_en     (4'hf)
+    .gfx_en     (4'hf),
+    .dbg_cfg_valid     (), .dbg_loader_error (), .dbg_v25_run (), .dbg_v25_fault (),
+    .dbg_deadline_miss (), .dbg_oki_busy (), .dbg_v25_pc (), .cfg_rot0 (),
+    .cfg_eeprom        (),
+    .nv_addr    (nv_addr),
+    .nv_din     (nv_din),
+    .nv_we      (nv_we),
+    .nv_dout    (nv_dout),
+    .nv_dirty   (),
+    .nv_dirty_clr (1'b0)
 );
 
 // One refresh burst every 1536 clocks (upstream's JTFRAME_RFSH_N/M).

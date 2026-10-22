@@ -10,13 +10,13 @@ Each line is "<addr> <R|W> <data> <mask>"; data is compared under the mask
 frame marks: shown in the report, not compared. Stops at the first
 difference and prints the context, or reports how many accesses agree.
 --resync N: after a difference, skip ahead on both sides to the next access
-that is not a read of a beam-timed address (30000c, 50000c, 700000), allowing
+that is not a read of a beam-timed address (30000c, 50000c, 700000, 800000), allowing
 for polling loops of different lengths; N is how many differences to allow.
 """
 import argparse
 import sys
 
-BEAM = {0x30000c, 0x50000c, 0x700000}
+BEAM = {0x30000c, 0x50000c, 0x700000, 0x800000}   # 800000: FixEight's line counter
 
 
 def read(path):

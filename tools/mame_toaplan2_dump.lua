@@ -24,6 +24,10 @@
 --   workram.bin          100000 up, 64 KB (TP-030) or 16 KB
 --   shared.bin           the RAM the 68000 shares with the V25: 32 KB at the
 --                        V25's 80000 (Knuckle Bash: 2 KB at its 00000)
+--   tx_vram.bin          FixEight only: the text layer's VRAM, 500000-501fff
+--   tx_line.bin          its line select (502000-5021ff) then line scroll
+--                        (503000-5031ff) words
+--   tx_gfx.bin           its graphics RAM, 600000-60ffff
 --   screen.png           MAME's picture of this frame (screen:snapshot, which
 --                        applies the game's rotation: 240 x 320 for ROT270)
 --   frame.json           frame numbers, time, and per chip the scroll register
@@ -141,6 +145,12 @@ local function dump_frame(n)
   if romname:sub(1, 5) == "kbash" then lo, hi = 0x00000, 0x007ff end
   for a = lo, hi do t[#t + 1] = string.char(v25:read_u8(a)) end
   write("shared.bin", table.concat(t))
+  if romname:sub(1, 8) == "fixeight" then
+    write("tx_vram.bin", words_le(function(k) return space:read_u16(0x500000 + k * 2) end, 0x1000))
+    write("tx_line.bin", words_le(function(k) return space:read_u16(0x502000 + k * 2) end, 0x100) ..
+                         words_le(function(k) return space:read_u16(0x503000 + k * 2) end, 0x100))
+    write("tx_gfx.bin", words_le(function(k) return space:read_u16(0x600000 + k * 2) end, 0x8000))
+  end
   local err = scr:snapshot(outdir .. "/screen.png")
 
   local f = assert(io.open(outdir .. "/frame.json", "w"))

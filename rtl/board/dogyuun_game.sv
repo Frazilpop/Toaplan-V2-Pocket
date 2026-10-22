@@ -1,12 +1,15 @@
 // Toaplan V2 board with the V25 (TP-030 Batsugun, TP-022 Dogyuun, TP-023
-// Knuckle Bash, TP-027 Grind Stormer / V-Five): ROM image loading,
+// Knuckle Bash, TP-026 FixEight, TP-027 Grind Stormer / V-Five): ROM image
+// loading,
 // board-accurate raster, MC68000, V25/audio subsystem, and the dual-GP9001
 // line renderer (the second chip idle on a one-chip board). What differs
 // between the boards comes from the image header (dogyuun_rom_loader's
 // cfg_*): clocks, work RAM, the 68000's and V25's maps, the V25's opcode
 // decryption (nitro, or none), its DIP ports, the OKI's rate, the graphics
 // region sizes and the GP mix. dipsw is XORed into the header's DIP
-// defaults (0: MAME's).
+// defaults (0: MAME's). TP-026 adds the text layer over the GP9001, a third
+// player and the 93C46 EEPROM, whose 64 words the platform seeds and saves
+// through nv_* (the board in reset).
 module dogyuun_game #(
     parameter integer AW = 22
 ) (
@@ -114,7 +117,17 @@ module dogyuun_game #(
     output     [3:0]   dbg_deadline_miss,  // a line engine missed its line (pulses)
     output             dbg_oki_busy,       // an OKI channel playing
     output     [19:0]  dbg_v25_pc,
-    output             cfg_rot0            // the game is ROT0 (Knuckle Bash)
+    output             cfg_rot0,           // the game is ROT0 (Knuckle Bash)
+    output             cfg_eeprom,         // the board has the 93C46 (TP-026)
+
+    // The 93C46's words for the save slot (pocket_nvram): read one clock
+    // after the address, written with the board in reset.
+    input      [5:0]   nv_addr,
+    input      [15:0]  nv_din,
+    input              nv_we,
+    output     [15:0]  nv_dout,
+    output             nv_dirty,
+    input              nv_dirty_clr
 );
 
 localparam [9:0] H_TOTAL = 10'd432;
@@ -146,6 +159,24 @@ wire [1:0]  cfg_gp1_size;
 localparam [2:0] BOARD_TP030 = 3'd0;
 localparam [2:0] BOARD_TP022 = 3'd1;
 localparam [2:0] BOARD_TP023 = 3'd2;
+localparam [2:0] BOARD_TP026 = 3'd3;
+wire        tp026 = cfg_board == BOARD_TP026;
+wire        loader_eeprom_we;
+wire [6:0]  loader_eeprom_addr;
+wire [7:0]  loader_eeprom_data;
+wire [15:0] main_in3_data;
+wire [11:0] tx_vram_addr;
+wire [15:0] tx_vram_data;
+wire [8:0]  tx_line_addr;
+wire [15:0] tx_line_data;
+wire [14:0] tx_gfx_addr;
+wire [7:0]  tx_gfx_data;
+wire        tx_gfx_wr;
+wire [14:0] tx_gfx_wr_addr;
+wire [7:0]  tx_gfx_wr_old;
+wire [9:0]  tx_pixel;
+wire [7:0]  sound_port0;
+wire        eeprom_do;
 wire        loader_audio_we;
 wire [14:0] loader_audio_addr;
 wire [7:0]  loader_audio_data;
@@ -317,9 +348,9 @@ dogyuun_rom_loader #(.AW(AW)) u_rom_loader (
     .audio_we       ( loader_audio_we       ),
     .audio_addr     ( loader_audio_addr     ),
     .audio_data     ( loader_audio_data     ),
-    .eeprom_we      (                       ),
-    .eeprom_addr    (                       ),
-    .eeprom_data    (                       ),
+    .eeprom_we      ( loader_eeprom_we      ),
+    .eeprom_addr    ( loader_eeprom_addr    ),
+    .eeprom_data    ( loader_eeprom_data    ),
     .accepted       ( loader_accepted       ),
     .range_error    ( loader_range_error    ),
     .overflow_error ( loader_overflow_error ),
@@ -383,8 +414,10 @@ assign snd_vu = 6'd0;
 assign snd_peak = 1'b0;
 
 dogyuun_inputs u_inputs (
+    .tp026     (tp026),
     .joy1_n    (joystick1[6:0]),
     .joy2_n    (joystick2[6:0]),
+    .joy3_n    (joystick3[6:0]),
     .start_n   (cab_1p),
     .coin_n    (coin),
     .service_n (service),
@@ -392,6 +425,7 @@ dogyuun_inputs u_inputs (
     .test_n    (dip_test),
     .in1       (main_in1_data),
     .in2       (main_in2_data),
+    .in3       (main_in3_data),
     .sys       (main_sys_data)
 );
 
@@ -413,6 +447,7 @@ dogyuun_main u_main (
     .in1_data            (main_in1_data),
     .in2_data            (main_in2_data),
     .sys_data            (main_sys_data),
+    .in3_data            (main_in3_data),
     .hcnt                (hcnt),
     .vcnt                (vcnt),
     .irq4_start          (main_irq4_start),
@@ -443,6 +478,15 @@ dogyuun_main u_main (
     .gp1_scrolls         (main_gp1_scrolls),
     .gp0_scroll_flip     (main_gp0_scroll_flip),
     .gp1_scroll_flip     (main_gp1_scroll_flip),
+    .tx_vram_scan_addr   (tx_vram_addr),
+    .tx_vram_scan_dout   (tx_vram_data),
+    .tx_line_scan_addr   (tx_line_addr),
+    .tx_line_scan_dout   (tx_line_data),
+    .tx_gfx_scan_addr    (tx_gfx_addr),
+    .tx_gfx_scan_dout    (tx_gfx_data),
+    .tx_gfx_wr           (tx_gfx_wr),
+    .tx_gfx_wr_addr      (tx_gfx_wr_addr),
+    .tx_gfx_wr_old       (tx_gfx_wr_old),
     .irq4                (main_irq4)
 );
 
@@ -455,7 +499,14 @@ dogyuun_sound u_sound (
     .oki_wrap            (cfg_oki_wrap),
     .oki_pin7            (cfg_oki_pin7),
     .secure_mode         (cfg_table == 2'd1),   // nitro; 0 is plain
+    .ts001_mode          (cfg_table == 2'd2),   // ts001turbo
     .tp023               (cfg_board == BOARD_TP023),
+    .tp026               (tp026),
+    .in1                 (main_in1_data[7:0]),
+    .in2                 (main_in2_data[7:0]),
+    .in3                 (main_in3_data[7:0]),
+    .eeprom_do           (eeprom_do),
+    .port0_out           (sound_port0),
     .port_t              (v25_port_t),
     .port_0              (v25_port_0),
     .port_1              (jmpr),
@@ -608,13 +659,62 @@ dogyuun_gp9001_video u_video (
     .debug_line_valid    (video_debug_line_valid)
 );
 
+// TP-026's text layer, over everything the GP9001 draws: its palette
+// entries are 0x400 + colour x 16 + pen, pen 0 transparent. The palette
+// address is registered here: the pixel is taken 14 clocks after the
+// display address moves, and the line buffers' outputs are two clocks in.
+toaplan_text_layer u_text (
+    .clk            (clk),
+    .rst            (video_reset),
+    .enable         (tp026),
+    .snapshot_start (main_obj_buf_start),
+    .src_vram_addr  (tx_vram_addr),
+    .src_vram_data  (tx_vram_data),
+    .src_line_addr  (tx_line_addr),
+    .src_line_data  (tx_line_data),
+    .gfx_addr       (tx_gfx_addr),
+    .gfx_data       (tx_gfx_data),
+    .gfx_wr         (tx_gfx_wr),
+    .gfx_wr_addr    (tx_gfx_wr_addr),
+    .gfx_wr_old     (tx_gfx_wr_old),
+    .line_event     (video_line_event),
+    .vcnt           (vcnt),
+    .display_x      (hcnt[8:0]),
+    .pixel          (tx_pixel)
+);
+
+reg [10:0] palette_display_addr = 11'd0;
+always @(posedge clk)
+    palette_display_addr <= (tx_pixel[3:0] != 4'd0) ? {1'b1, tx_pixel} :
+                                                     video_palette_addr;
+
+// FixEight's 93C46 on the V25's port 0.
+toaplan_93c46 u_eeprom (
+    .clk          (clk),
+    .rst          (main_reset),
+    .cs           (tp026 && sound_port0[4]),
+    .sk           (sound_port0[5]),
+    .di           (sound_port0[6]),
+    .dout         (eeprom_do),
+    .seed_we      (loader_eeprom_we),
+    .seed_addr    (loader_eeprom_addr),
+    .seed_data    (loader_eeprom_data),
+    .nv_addr      (nv_addr),
+    .nv_din       (nv_din),
+    .nv_we        (nv_we),
+    .nv_dout      (nv_dout),
+    .nv_dirty     (nv_dirty),
+    .nv_dirty_clr (nv_dirty_clr)
+);
+assign cfg_eeprom = tp026;
+
 dogyuun_palette_snapshot u_palette_snapshot (
     .clk            (clk),
     .rst            (video_reset),
     .snapshot_start (main_obj_buf_start),
     .source_addr    (palette_snapshot_addr),
     .source_data    (palette_snapshot_data),
-    .display_addr   (video_palette_addr),
+    .display_addr   (palette_display_addr),
     .display_data   (video_palette_data)
 );
 

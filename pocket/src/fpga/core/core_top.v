@@ -21,6 +21,7 @@
 // BRIDGE MAP
 //
 //   0x00000000-   ROM image data slot -> the board's loader   pocket_rom_loader
+//   0x20000000-   EEPROM save slot, 128 bytes, r/w (FixEight)   pocket_nvram
 //   0xF1000000-   options (interact.json)                     r/w, see below
 //   0xF8000000-   APF command bridge                          core_bridge_cmd
 //
@@ -28,6 +29,10 @@
 //
 //   [0] id 0  instance JSON (APF requires the instance slot to come first)
 //   [1] id 1  <set>.rom at 0x00000000
+//   [2] id 2  <set>.sav at 0x20000000, nonvolatile: FixEight's 93C46. The
+//             factory contents come with the image (its eeprom region, the
+//             set's .nv); APF writes a save over them after the image, both
+//             with the core in reset, and reads it back at shutdown.
 //
 // The image's 4 KB header says which board and game it is (clocks, work RAM,
 // the V25's decryption, the DIP defaults, the graphics sizes); the board
@@ -404,6 +409,18 @@ wire [31:0] cmd_bridge_rd_data;
 //                      the image header's defaults, which are MAME's.
 //                      The game reads the switch at boot, so changing it
 //                      resets the game.
+//                      FixEight has no DIPs: its settings are in the
+//                      EEPROM, set in the test mode, which the board's test
+//                      button (SYS bit 2) steps through on each press:
+//                      crosshatch, input check, then the menu
+//                      (CONFIGURATION, SOUND CHECK), where the game writes
+//                      the EEPROM on leaving CONFIGURATION (seen in MAME).
+//                      Its attract looks at the button only every few
+//                      frames, so a press is held a quarter of a second.
+//                      Turned on, Test Mode makes one press, as the menu
+//                      closes (the board stands still under it), and while
+//                      on, L is the test button; turned off, it resets the
+//                      game, the one way out of the test mode.
 //   0xF100000C         write: reset the game (1 ms)
 //   0xF1000014 [0]     diagnostic overlay (pocket_diag), see DIAGNOSTICS
 //
@@ -414,6 +431,8 @@ wire [31:0] cmd_bridge_rd_data;
 localparam [31:0] OPT_MENU = 32'h0000_0001;
 
 reg  [31:0] opt_74   = 32'd0;
+wire        eeprom_74;                      // the board is FixEight's (below)
+wire [31:0] nv_bridge_rd;
 reg         diag_74  = 1'b0;
 reg  [16:0] hrst_cnt = 17'd0;               //   1 ms at 74.25 MHz = 74,250
 wire        hrst_74  = (hrst_cnt != 17'd0);
@@ -425,7 +444,8 @@ always @(posedge clk_74a) begin
         case (bridge_addr)
         32'hF1000000: begin
             opt_74 <= opt_wr;
-            if (opt_wr[0] != opt_74[0]) hrst_cnt <= 17'd74250;
+            if (opt_wr[0] != opt_74[0] && !(eeprom_74 && opt_wr[0]))
+                hrst_cnt <= 17'd74250;
         end
         32'hF100000C: hrst_cnt <= 17'd74250;
         32'hF1000014: diag_74  <= bridge_wr_data[0];
@@ -438,6 +458,7 @@ always @(posedge clk_74a) begin
     casez (bridge_addr)
     32'hF1000000: bridge_rd_data <= opt_74;
     32'hF1000014: bridge_rd_data <= {31'd0, diag_74};
+    32'h2???????: bridge_rd_data <= nv_bridge_rd;
     32'hF8??????: bridge_rd_data <= cmd_bridge_rd_data;
     default:      bridge_rd_data <= 32'd0;
     endcase
@@ -512,9 +533,15 @@ wire    [31:0]  target_dataslot_length     = 32'd0;
 wire    [31:0]  target_buffer_param_struct = 32'd0;
 wire    [31:0]  target_buffer_resp_struct  = 32'd0;
 
-wire    [9:0]   datatable_addr = 10'd0;
-wire            datatable_wren = 1'b0;
-wire    [31:0]  datatable_data = 32'd0;
+// THE SAVE FILE'S SIZE (Mille Miglia's). APF writes back as many bytes as
+// the Dataslot ID/Size table says, and when no .sav existed yet that entry
+// is zero: FixEight would save into its EEPROM and nothing would reach the
+// card. So for FixEight the core keeps writing 128 into the save slot's
+// size word, table index 2 (data.json order), word 2*2+1. Every other game
+// leaves the table alone, and gets no .sav.
+wire    [9:0]   datatable_addr = 10'd5;
+wire            datatable_wren = eeprom_74;
+wire    [31:0]  datatable_data = 32'd128;
 wire    [31:0]  datatable_q;
 
 core_bridge_cmd icb (
@@ -636,24 +663,53 @@ wire board_rst = cold_rst | ~reset_n_sys | host_rst | ~rom_loaded | ~cfg_valid;
 // runs late. A wins: button 1 is A or the rapid press, so A and R together
 // are the button held. The phase rests at the press while R is up, so R
 // fires on the frame it is pressed.
-wire [15:0] k1, k2;
+//
+// FixEight takes a third player, the dock's controller 3, the same way.
+wire [15:0] k1, k2, k3;
 synch_3 #(.WIDTH(16)) s_k1 (.i(cont1_key[15:0]), .o(k1), .clk(clk_sys), .rise(), .fall());
 synch_3 #(.WIDTH(16)) s_k2 (.i(cont2_key[15:0]), .o(k2), .clk(clk_sys), .rise(), .fall());
+synch_3 #(.WIDTH(16)) s_k3 (.i(cont3_key[15:0]), .o(k3), .clk(clk_sys), .rise(), .fall());
 
 reg  [1:0] rapid1   = 2'd0;                 //   the rapid press's phase, 0 pressed
 reg  [1:0] rapid2   = 2'd0;
-wire [1:0] rapid_b1 = {k2[9] && rapid2 == 2'd0, k1[9] && rapid1 == 2'd0};
+reg  [1:0] rapid3   = 2'd0;
+wire [2:0] rapid_b1 = {k3[9] && rapid3 == 2'd0, k2[9] && rapid2 == 2'd0,
+                       k1[9] && rapid1 == 2'd0};
 
 wire [6:0] joy1_n  = ~{k1[6:5], k1[4] | rapid_b1[0], k1[0], k1[1], k1[2], k1[3]};
 wire [6:0] joy2_n  = ~{k2[6:5], k2[4] | rapid_b1[1], k2[0], k2[1], k2[2], k2[3]};
-wire [3:0] coin_n  = ~{2'b00, k2[14], k1[14]};
-wire [3:0] start_n = ~{2'b00, k2[15], k1[15]};
+wire [6:0] joy3_n  = ~{k3[6:5], k3[4] | rapid_b1[2], k3[0], k3[1], k3[2], k3[3]};
+wire [3:0] coin_n  = ~{1'b0, k3[14], k2[14], k1[14]};
+wire [3:0] start_n = ~{1'b0, k3[15], k2[15], k1[15]};
+
 
 // Pause: the game is paused while the Pocket's own menu is open (APF's OS
 // notify, host command 0x00B0) -- the 68000 halted, the sound held -- and
 // the picture behind the menu is blacked out (after the overlay, below).
 wire inmenu_sys;
 synch_3 s_inmenusys (.i(osnotify_inmenu), .o(inmenu_sys), .clk(clk_sys), .rise(), .fall());
+
+// FixEight's test button (Test Mode, above): one press of a quarter second
+// (23,625,000 clocks) once Test Mode is turned on and the menu has closed
+// and no reset is running; then L while Test Mode is on.
+wire       cfg_eeprom;
+reg        opt_test_q = 1'b0;
+reg        test_pend  = 1'b0;
+reg [24:0] test_cnt   = 25'd0;
+always @(posedge clk_sys) begin
+    opt_test_q <= opt_test;
+    if (!cfg_eeprom || !opt_test)
+        test_pend <= 1'b0;
+    else if (opt_test && !opt_test_q)
+        test_pend <= 1'b1;
+    if (test_cnt != 25'd0)
+        test_cnt <= test_cnt - 25'd1;
+    else if (test_pend && !inmenu_sys && !board_rst) begin
+        test_pend <= 1'b0;
+        test_cnt  <= 25'd23625000;
+    end
+end
+wire test_n = ~(cfg_eeprom && ((test_cnt != 25'd0) || (opt_test && k1[8])));
 
 // ============================================================ ROM -> board
 wire allcomplete_sys;
@@ -710,6 +766,9 @@ wire          dbg_loader_error, dbg_v25_run, dbg_v25_fault, dbg_oki_busy;
 wire [3:0]    dbg_deadline_miss;
 wire [19:0]   dbg_v25_pc;
 wire          cfg_rot0;
+wire [5:0]    nv_addr;
+wire [15:0]   nv_din, nv_dout;
+wire          nv_we, nv_dirty, nv_dirty_clr;
 
 dogyuun_game #(.AW(AW)) u_game (
     .rst        (board_rst),
@@ -731,7 +790,7 @@ dogyuun_game #(.AW(AW)) u_game (
     .coin       (coin_n),
     .joystick1  (joy1_n),
     .joystick2  (joy2_n),
-    .joystick3  (7'h7f),
+    .joystick3  (joy3_n),
     .joystick4  (7'h7f),
     .joyana_l1  (16'd0), .joyana_l2 (16'd0), .joyana_l3 (16'd0), .joyana_l4 (16'd0),
     .joyana_r1  (16'd0), .joyana_r2 (16'd0), .joyana_r3 (16'd0), .joyana_r4 (16'd0),
@@ -770,7 +829,7 @@ dogyuun_game #(.AW(AW)) u_game (
     .status     (32'd0),
     .dip_pause  (~inmenu_sys),
     .dip_flip   (dip_flip),
-    .dip_test   (1'b1),             // no test button: Test Mode is the DIP
+    .dip_test   (test_n),           // FixEight's test button; elsewhere Test Mode is the DIP
     .dip_fxlevel(2'd0),
     .service    (1'b1),             // no service coin: Select is the coin
     .tilt       (1'b1),
@@ -791,8 +850,37 @@ dogyuun_game #(.AW(AW)) u_game (
     .dbg_deadline_miss(dbg_deadline_miss),
     .dbg_oki_busy     (dbg_oki_busy),
     .dbg_v25_pc       (dbg_v25_pc),
-    .cfg_rot0         (cfg_rot0)
+    .cfg_rot0         (cfg_rot0),
+    .cfg_eeprom       (cfg_eeprom),
+
+    .nv_addr          (nv_addr),
+    .nv_din           (nv_din),
+    .nv_we            (nv_we),
+    .nv_dout          (nv_dout),
+    .nv_dirty         (nv_dirty),
+    .nv_dirty_clr     (nv_dirty_clr)
 );
+
+// ================================================================= EEPROM
+pocket_nvram u_nvram (
+    .clk_74a             (clk_74a),
+    .bridge_wr           (bridge_wr),
+    .bridge_rd           (bridge_rd),
+    .bridge_endian_little(bridge_endian_little),
+    .bridge_addr         (bridge_addr),
+    .bridge_wr_data      (bridge_wr_data),
+    .bridge_rd_word      (nv_bridge_rd),
+    .clk                 (clk_sys),
+    .nv_addr             (nv_addr),
+    .nv_din              (nv_din),
+    .nv_we               (nv_we),
+    .nv_dout             (nv_dout),
+    .nv_dirty            (nv_dirty),
+    .nv_dirty_clr        (nv_dirty_clr)
+);
+
+// Which board the image is, for the bridge side: static once loaded.
+synch_3 s_eep74 (.i(cfg_eeprom), .o(eeprom_74), .clk(clk_74a), .rise(), .fall());
 
 // ================================================================== SDRAM
 //
@@ -972,9 +1060,11 @@ always @(posedge clk_sys) begin
     if (vid_vblank && !vb_q) begin
         rapid1 <= rapid1 + 2'd1;
         rapid2 <= rapid2 + 2'd1;
+        rapid3 <= rapid3 + 2'd1;
     end
     if (!k1[9]) rapid1 <= 2'd0;
     if (!k2[9]) rapid2 <= 2'd0;
+    if (!k3[9]) rapid3 <= 2'd0;
 end
 
 always @(posedge clk_sys) begin

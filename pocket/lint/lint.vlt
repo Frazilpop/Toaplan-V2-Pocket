@@ -27,3 +27,6 @@ lint_off -rule MULTIDRIVEN -file "*/core_bridge_cmd.v"
 // jtframe_sdram64 has an sdram_din output only under Verilator (its DQ is
 // input-only there); in the build it drives the inout.
 lint_off -rule PINMISSING -file "*/pocket/src/fpga/core/core_top.v" -match "*sdram_din*"
+// pocket_nvram (Mille Miglia's) takes the save's 16-bit words by their word
+// address: the loader's byte-address bit 0 is always 0.
+lint_off -rule UNUSEDSIGNAL -file "*/pocket/src/fpga/core/pocket_nvram.sv" -match "*ld_addr*"

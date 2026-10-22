@@ -9,7 +9,11 @@
 // The V25's map: TP-030, TP-022 and TP-027 put the YM2151 at 00000/1, the
 // OKI at 00004 and the shared RAM at 80000-87fff (mirrored to fffff);
 // TP-023 (tp023) the shared RAM at 00000-007ff, the YM2151 at 04000/1, the
-// OKI at 04002 and its own 32 KB ROM at 80000 (mirrored), read as rom_din.
+// OKI at 04002 and its own 32 KB ROM at 80000 (mirrored), read as rom_din;
+// TP-026 (tp026) the players' ports IN1-IN3 at 00000/2/4, the YM2151 at
+// 0000a/b, the OKI at 0000c, the shared RAM as TP-030, and the 93C46 on P0
+// (CS, CLK, DI out of port0_out bits 4-6, DO into bit 7) instead of a DIP
+// bank.
 
 module dogyuun_sound #(
     parameter integer V25_BUS_PHASES_USE_CEN = 1,
@@ -30,6 +34,13 @@ module dogyuun_sound #(
     input                       oki_pin7,
     input                       secure_mode,
     input                       tp023,
+    input                       tp026,
+    input                       ts001_mode,
+    input      [7:0]            in1,
+    input      [7:0]            in2,
+    input      [7:0]            in3,
+    input                       eeprom_do,
+    output     [7:0]            port0_out,
     // The V25's input ports, active high as MAME's ports (inverted here as
     // MAME's .exor(0xff)): which DIP bank goes where is the board's.
     input      [7:0]            port_t,
@@ -70,9 +81,9 @@ module dogyuun_sound #(
     output signed [13:0]        debug_oki_sound
 );
 
-wire [19:0] YM_ADDR  = tp023 ? 20'h04000 : 20'h00000;
-wire [19:0] YM_DATA  = tp023 ? 20'h04001 : 20'h00001;
-wire [19:0] OKI_DATA = tp023 ? 20'h04002 : 20'h00004;
+wire [19:0] YM_ADDR  = tp023 ? 20'h04000 : tp026 ? 20'h0000a : 20'h00000;
+wire [19:0] YM_DATA  = tp023 ? 20'h04001 : tp026 ? 20'h0000b : 20'h00001;
+wire [19:0] OKI_DATA = tp023 ? 20'h04002 : tp026 ? 20'h0000c : 20'h00004;
 wire sound_domain_reset = reset;
 reg  pause_held = 1'b0;
 wire pause_quiescent;
@@ -237,8 +248,12 @@ dogyuun_v25_cpu #(
     .reset_n           (v25_reset_n),
     .clock_enable      (v25_cen && !pause_freeze),
     .secure_mode       (secure_mode),
+    .ts001_mode        (ts001_mode),
     .tp023             (tp023),
-    .port0_in          (~port_0),
+    .tp026             (tp026),
+    // TP-026: MAME's EEPROM port, DO in bit 7, the rest read as 0.
+    .port0_in          (tp026 ? {eeprom_do, 7'd0} : ~port_0),
+    .port0_out         (port0_out),
     .port1_in          (~port_1),
     .portt_in          (~port_t),
     .bus_addr          (v25_bus_addr),
@@ -275,6 +290,12 @@ always @(*) begin
             v25_bus_din = shared_din;
         else if (v25_rom_cs)
             v25_bus_din = rom_din;
+        else if (tp026 && v25_bus_addr == 20'h00000)
+            v25_bus_din = in1;
+        else if (tp026 && v25_bus_addr == 20'h00002)
+            v25_bus_din = in2;
+        else if (tp026 && v25_bus_addr == 20'h00004)
+            v25_bus_din = in3;
         else if (v25_bus_addr == YM_DATA)
             v25_bus_din = ym_dout;
         else if (v25_bus_addr == OKI_DATA)
