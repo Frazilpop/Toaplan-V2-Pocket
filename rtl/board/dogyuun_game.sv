@@ -117,6 +117,9 @@ module dogyuun_game #(
     output     [3:0]   dbg_deadline_miss,  // a line engine missed its line (pulses)
     output             dbg_oki_busy,       // an OKI channel playing
     output     [19:0]  dbg_v25_pc,
+    output     [23:0]  dbg_m68_pc,         // the 68000's last program fetch
+    output     [31:0]  dbg_m68_rom_rd,     // its last data read from ROM: {address, byte}
+    output             dbg_m68_halted,
     output             cfg_rot0,           // the game is ROT0 (Knuckle Bash)
     output             cfg_eeprom,         // the board has the 93C46 (TP-026)
 
@@ -487,7 +490,10 @@ dogyuun_main u_main (
     .tx_gfx_wr           (tx_gfx_wr),
     .tx_gfx_wr_addr      (tx_gfx_wr_addr),
     .tx_gfx_wr_old       (tx_gfx_wr_old),
-    .irq4                (main_irq4)
+    .irq4                (main_irq4),
+    .dbg_pc              (dbg_m68_pc),
+    .dbg_rom_rd          (dbg_m68_rom_rd),
+    .dbg_halted          (dbg_m68_halted)
 );
 
 dogyuun_sound u_sound (

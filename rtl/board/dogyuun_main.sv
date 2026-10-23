@@ -78,7 +78,15 @@ module dogyuun_main #(
     output     [14:0]  tx_gfx_wr_addr,   // and the byte it held before
     output     [7:0]   tx_gfx_wr_old,
 
-    output             irq4
+    output             irq4,
+
+    // For the Pocket's overlay: where the 68000 is (its last program fetch),
+    // its last data read from the ROM ({address, the byte read}: the V25
+    // upload's progress, or the message an error screen printed), and its
+    // HALT (a double bus fault).
+    output reg [23:0]  dbg_pc,
+    output reg [31:0]  dbg_rom_rd,
+    output             dbg_halted
 );
 
 wire [23:1] cpu_addr;
@@ -96,6 +104,7 @@ wire        cpu_fc0;
 wire        cpu_fc1;
 wire        cpu_fc2;
 wire        cpu_reset_out_n;
+wire        cpu_halted_n;
 wire        cpu_vpa_n = ~&{cpu_fc0, cpu_fc1, cpu_fc2, ~cpu_as_n};
 wire        cpu_iack = !cpu_as_n && cpu_fc0 && cpu_fc1 && cpu_fc2;
 
@@ -301,7 +310,7 @@ fx68k u_main68k (
     .FC2      (cpu_fc2),
     .BGn      (),
     .oRESETn  (cpu_reset_out_n),
-    .oHALTEDn (),
+    .oHALTEDn (cpu_halted_n),
     .DTACKn   (cpu_dtack_n),
     .VPAn     (cpu_vpa_n),
     .BERRn    (1'b1),
@@ -370,13 +379,13 @@ jtframe_dual_ram16 #(.AW(WRAM_AW)) u_wram (
     .q1    ()
 );
 
-jtframe_dual_ram #(.DW(8), .AW(15)) u_shared_ram (
-    .clk0  (clk),
+// One clock for both CPUs (sound_clk is clk): toaplan_shared_ram says why.
+toaplan_shared_ram #(.DW(8), .AW(15)) u_shared_ram (
+    .clk   (clk),
     .data0 (audio_we ? audio_data : cpu_dout[7:0]),
     .addr0 (audio_we ? audio_addr : cpu_addr8[15:1]),
     .we0   (big_shared_we || audio_we),
     .q0    (big_shared_dout),
-    .clk1  (sound_clk),
     .data1 (sound_shared_din),
     .addr1 (sound_shared_addr),
     .we1   (sound_shared_we && !tp023),
@@ -384,13 +393,12 @@ jtframe_dual_ram #(.DW(8), .AW(15)) u_shared_ram (
 );
 
 // TP-023's 2 KB: 68000 200000-200fff (low bytes), V25 00000-007ff.
-jtframe_dual_ram #(.DW(8), .AW(11)) u_tp023_shared_ram (
-    .clk0  (clk),
+toaplan_shared_ram #(.DW(8), .AW(11)) u_tp023_shared_ram (
+    .clk   (clk),
     .data0 (cpu_dout[7:0]),
     .addr0 (cpu_addr8[11:1]),
     .we0   (small_shared_we),
     .q0    (small_shared_dout),
-    .clk1  (sound_clk),
     .data1 (sound_shared_din),
     .addr1 (sound_shared_addr[10:0]),
     .we1   (sound_shared_we && tp023),
@@ -479,6 +487,20 @@ always @(posedge clk) begin
     else if (cpu_read)
         cpu_din <= cpu_din_mux;
 end
+
+// Taken while DTACK is low, so the last value of the cycle stands.
+always @(posedge clk) begin
+    if (cpu_core_reset) begin
+        dbg_pc     <= 24'd0;
+        dbg_rom_rd <= 32'd0;
+    end else if (cpu_read && !cpu_dtack_n) begin
+        if (cpu_fc1 && !cpu_fc0)
+            dbg_pc <= cpu_addr8;
+        else if (!cpu_fc1 && cpu_fc0 && rom_bus_cs)
+            dbg_rom_rd <= {cpu_addr8, cpu_lds_n ? cpu_din[15:8] : cpu_din[7:0]};
+    end
+end
+assign dbg_halted = !cpu_halted_n;
 
 reg irq4_latch = 1'b0;
 assign irq4 = irq4_latch;

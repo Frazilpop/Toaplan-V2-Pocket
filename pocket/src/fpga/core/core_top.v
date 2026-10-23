@@ -765,6 +765,9 @@ wire          dip_flip;
 wire          dbg_loader_error, dbg_v25_run, dbg_v25_fault, dbg_oki_busy;
 wire [3:0]    dbg_deadline_miss;
 wire [19:0]   dbg_v25_pc;
+wire [23:0]   dbg_m68_pc;
+wire [31:0]   dbg_m68_rom_rd;
+wire          dbg_m68_halted;
 wire          cfg_rot0;
 wire [5:0]    nv_addr;
 wire [15:0]   nv_din, nv_dout;
@@ -850,6 +853,9 @@ dogyuun_game #(.AW(AW)) u_game (
     .dbg_deadline_miss(dbg_deadline_miss),
     .dbg_oki_busy     (dbg_oki_busy),
     .dbg_v25_pc       (dbg_v25_pc),
+    .dbg_m68_pc       (dbg_m68_pc),
+    .dbg_m68_rom_rd   (dbg_m68_rom_rd),
+    .dbg_m68_halted   (dbg_m68_halted),
     .cfg_rot0         (cfg_rot0),
     .cfg_eeprom       (cfg_eeprom),
 
@@ -1019,7 +1025,8 @@ end
 //   10 the V25 faulted (an opcode the z8086 does not have; should stay red)
 //   11 a line engine missed its line: SDRAM too slow for the video (red)
 //   12 an OKI channel playing (live)
-//   13 the overlay option on  14 blinks about once a second (frame counter)
+//   13 the 68000 halted (a double bus fault; should stay red)
+//   14 blinks about once a second (frame counter)
 //   15 the 68000's first fetch (its reset vectors, SDRAM bank 0 words 0-3)
 //      read back equal to what the loader wrote: the SDRAM read path right
 //
@@ -1033,7 +1040,10 @@ end
 //   4 frames since the board left reset
 //   5 bytes of the image taken by the board's loader (the .rom's length
 //     when loaded: 006C1000 for TP-030 and TP-022)
-//   6 words 1,0 of the 68000's first fetch    7 words 3,2 of it
+//   6 the 68000's last program fetch, live: where it is (a STOP shows one
+//     address)
+//   7 the 68000's last data read from the ROM, {address, byte}: a table or
+//     string it read, or how far an upload from the ROM has got
 //
 // Peaks and flags 3, 11 hold until the overlay is turned OFF in the menu
 // (diag_clr), so the routine is: overlay on to see the baseline, off to
@@ -1124,11 +1134,12 @@ wire rb_good = !rb_armed && rb_i == 3'd4 &&
 reg  [15:0]  diag_flags = 16'd0;
 reg  [255:0] diag_cnt   = 256'd0;
 always @(posedge clk_sys) begin
-    diag_flags <= {rb_good, frame[5], diag_opt, dbg_oki_busy, f_miss,
+    diag_flags <= {rb_good, frame[5], dbg_m68_halted, dbg_oki_busy, f_miss,
                    dbg_v25_fault, dbg_v25_run, board_rst,
                    dbg_loader_error, cfg_valid, ld_overflow, rom_loaded,
                    f_allc, reset_n_sys, mem_ready_sys, locked_sys};
-    diag_cnt   <= {rb_w[3], rb_w[2], rb_w[1], rb_w[0],
+    diag_cnt   <= {dbg_m68_rom_rd,
+                   8'd0, dbg_m68_pc,
                    5'd0, ld_bytes,
                    frames,
                    12'd0, dbg_v25_pc,
