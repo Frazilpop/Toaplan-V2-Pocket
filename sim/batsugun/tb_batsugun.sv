@@ -184,6 +184,7 @@ dogyuun_game #(.AW(AW)) u_game (
     .gfx_en     (4'hf),
     .dbg_cfg_valid     (), .dbg_loader_error (), .dbg_v25_run (), .dbg_v25_fault (),
     .dbg_deadline_miss (), .dbg_oki_busy (), .dbg_v25_pc (), .cfg_rot0 (),
+    .dbg_m68_pc (), .dbg_m68_rom_rd (), .dbg_m68_halted (),
     .cfg_eeprom        (),
     .nv_addr    (nv_addr),
     .nv_din     (nv_din),
