@@ -146,4 +146,4 @@ mkdir -p "$ROMS"
 printf 'sha256 %s\nbuilt %s\ncommit %s\ndeployed %s\n' "$a" "$(built)" \
 	"$(git -C "$REPO" log -1 --format=%h 2>/dev/null)" "$(date '+%Y-%m-%d %H:%M')" >"$RECORD"
 echo "Bitstream SHA-256 verified on the card: the build of $(built) is on $VOL"
-echo "Left $VOL mounted - eject it yourself, then back in the Pocket and launch: openFPGA > Arcade > Toaplan V2"
+echo "Left $VOL mounted - eject it yourself, then back in the Pocket and launch: openFPGA > Arcade Multi > Toaplan V2"
