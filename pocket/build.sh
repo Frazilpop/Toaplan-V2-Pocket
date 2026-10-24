@@ -99,6 +99,18 @@ if [ "$clean" = 1 ]; then
     find "$qb/db" "$qb/incremental_db" -mindepth 1 -delete
 fi
 
+# ------------------------------------------------------------- Colima
+# Docker runs in Colima's Linux machine, which holds all the memory it
+# was given (12 GB) for as long as it is up. A build starts it when it is down
+# and leaves a note that it did; DCMSX's server stops a Colima with that note a
+# quarter of an hour after its last build (admin/decomp/tools.js). One started
+# by hand has no note and is left alone.
+if ! colima status >/dev/null 2>&1; then
+    echo "== starting Colima"
+    colima start
+    touch "$HOME/.colima/started-for-build"
+fi
+
 log=$qb/compile.log
 echo "== Quartus 21.1 ($image)"
 echo "   log: $log"
