@@ -9,8 +9,30 @@
 //
 // The taps below bring out the 68000's and the V25's buses for the traces
 // compared against MAME.
+//
+// Built with ANALOGIZER (sim/batsugun/build.sh --anz), the shell's
+// pocket_analogizer is on the board's raster as core_top has it (but before
+// the overlay and the menu's black, which the harness has not got), on its
+// own 27 MHz clock: analogizer.bin's word in as the bridge gives it, the
+// Pocket's controls and the SNAC controllers' data lines in, the cartridge
+// pins and the players' controls out.
 module tb_batsugun (
     input              clk,
+`ifdef ANALOGIZER
+    input              clk_anz,     // 27 MHz, rising with clk every 56 VCO ticks
+    input              anz_wr,      // a bridge write to 0xF7000000 (on clk)
+    input      [31:0]  anz_data,
+    input      [15:0]  anz_cont1, anz_cont2, anz_cont3,
+    input      [7:4]   anz_bank0_in,    // driven onto bank0 while it is an input
+    input              anz_pin31_in,    // and onto pin31
+    output     [7:0]   anz_bank3, anz_bank2, anz_bank1,
+    output     [7:4]   anz_bank0,
+    output             anz_bank3_dir, anz_bank2_dir, anz_bank1_dir, anz_bank0_dir,
+    output             anz_pin30, anz_pin30_dir, anz_pwroff, anz_pin31_dir,
+    output     [15:0]  anz_key1, anz_key2, anz_key3,
+    output             anz_p1_snac, anz_pocket_off,
+    output     [31:0]  anz_cfg,         // the word as pocket_analogizer took it
+`endif
     input              rst,         // the game (68000, V25, raster)
     input              cold_rst,    // the loader and the SDRAM controller
 
@@ -110,6 +132,7 @@ wire [15:0]   prog_data;
 wire [AW-1:0] prog_addr;
 wire          prog_rd, prog_we;
 wire          dip_flip;
+wire          HS, VS;
 
 dogyuun_game #(.AW(AW)) u_game (
     .rst        (rst),
@@ -125,8 +148,8 @@ dogyuun_game #(.AW(AW)) u_game (
     .blue       (blue),
     .LHBL       (LHBL),
     .LVBL       (LVBL),
-    .HS         (),
-    .VS         (),
+    .HS         (HS),
+    .VS         (VS),
     .cab_1p     (start_n),
     .coin       (coin_n),
     .joystick1  (joy1_n),
@@ -300,5 +323,42 @@ assign dbg_build_cycles = {u_game.video_gp1_object_cycles, u_game.video_gp1_tile
                            u_game.video_gp0_object_cycles, u_game.video_gp0_tile_cycles};
 assign vid_color         = u_game.video_palette_addr;
 assign vid_palette       = u_game.video_palette_data;
+
+`ifdef ANALOGIZER
+// core_top's raster: the board's, a dot behind, its syncs active high
+reg       vid_hs = 1'b0, vid_vs = 1'b0, vid_hblank = 1'b1, vid_vblank = 1'b1;
+reg [7:0] vid_r = 8'd0, vid_g = 8'd0, vid_b = 8'd0;
+always @(posedge clk) if (pxl_cen) begin
+    vid_hblank <= ~LHBL;
+    vid_vblank <= ~LVBL;
+    vid_hs     <= ~HS;
+    vid_vs     <= ~VS;
+    {vid_r, vid_g, vid_b} <= {red, green, blue};
+end
+
+wire [7:0] c_b3, c_b2, c_b1;
+wire [7:4] c_b0;
+wire       c_p30, c_p31;
+assign c_b0  = anz_bank0_dir ? 4'hz : anz_bank0_in;
+assign c_p31 = anz_pin31_dir ? 1'bz : anz_pin31_in;
+pocket_analogizer u_anz (
+    .clk_74a (clk), .bridge_wr (anz_wr), .bridge_addr (32'hF7000000), .bridge_wr_data (anz_data),
+    .clk_sys (clk), .ce_pix (pxl_cen), .hs (vid_hs), .vs (vid_vs),
+    .hblank (vid_hblank), .vblank (vid_vblank), .r (vid_r), .g (vid_g), .b (vid_b),
+    .pocket_off (anz_pocket_off),
+    .clk_anz (clk_anz),
+    .cont1_key (anz_cont1), .cont2_key (anz_cont2), .cont3_key (anz_cont3),
+    .key1 (anz_key1), .key2 (anz_key2), .key3 (anz_key3), .p1_snac (anz_p1_snac),
+    .cart_tran_bank2 (c_b2), .cart_tran_bank2_dir (anz_bank2_dir),
+    .cart_tran_bank3 (c_b3), .cart_tran_bank3_dir (anz_bank3_dir),
+    .cart_tran_bank1 (c_b1), .cart_tran_bank1_dir (anz_bank1_dir),
+    .cart_tran_bank0 (c_b0), .cart_tran_bank0_dir (anz_bank0_dir),
+    .cart_tran_pin30 (c_p30), .cart_tran_pin30_dir (anz_pin30_dir),
+    .cart_pin30_pwroff_reset (anz_pwroff),
+    .cart_tran_pin31 (c_p31), .cart_tran_pin31_dir (anz_pin31_dir)
+);
+assign {anz_bank3, anz_bank2, anz_bank1, anz_bank0, anz_pin30} = {c_b3, c_b2, c_b1, c_b0, c_p30};
+assign anz_cfg = u_anz.cfg_74;
+`endif
 
 endmodule

@@ -16,6 +16,12 @@
 #   make rotate   Screen Rotation: pocket_rotate's scaler slot through
 #                 pocket_video's end-of-line word and its turned D-pad, for
 #                 every game kind, setting and controller (sim/pocket)
+#   make anz      the Analogizer: the harness with pocket_analogizer on the
+#                 board's raster (sim/batsugun/build.sh --anz,
+#                 build/obj_anz/tb_batsugun), then
+#                 tools/pocket/check_analogizer.py: the cartridge pins in
+#                 every video mode against the board's frame, the tie-offs
+#                 with it off, SNAC pads under every assignment
 #   make clean
 #
 # Run tools/bootstrap.sh first: fx68k, jt6295 and IKAOPM are used in place
@@ -53,7 +59,7 @@ FEED      ?= build/mame/dogyuun_v25_feed.txt
 CLOCKS    ?= 600000000
 CEN       ?= 25
 
-.PHONY: lint v25 sim rotate clean
+.PHONY: lint v25 sim rotate anz clean
 lint:
 	@test -d third_party/fx68k || { echo "run tools/bootstrap.sh first"; exit 1; }
 	$(VERILATOR) $(VFLAGS) $(DEFINES) --top-module dogyuun_game $(BOARD) $(THIRD)
@@ -85,5 +91,9 @@ rotate:
 	    { grep -m10 -E 'Error|Warning' build/rotate_build.log; exit 1; }
 	build/obj_rotate/tb_rotate
 
+anz:
+	sim/batsugun/build.sh --anz > build/anz_build.log 2>&1 || { grep -m5 Error build/anz_build.log; exit 1; }
+	python3 -I tools/pocket/check_analogizer.py
+
 clean:
-	rm -rf obj_dir build/tmp build/v25 build/obj_batsugun build/obj_rotate
+	rm -rf obj_dir build/tmp build/v25 build/obj_batsugun build/obj_rotate build/obj_anz
