@@ -248,6 +248,10 @@ wire pend_wins = (pend_pixel[3:0] != 4'h0) &&
 wire pend_write = ((state == ST_COMP_PIPE) || pend_flush) && pend_wins;
 wire clear_port1 = state == ST_CLEAR;
 wire build_port1_write = clear_port1 || pend_write;
+// Port 1 leaves the scan only in the clocks it may write, when the engine
+// is building into the other bank. Between the last line's commit and the
+// next start build_bank is the bank on screen.
+wire build_port1_busy = clear_port1 || (state == ST_COMP_PIPE) || pend_flush;
 wire [8:0] build_port1_addr = clear_port1 ? clear_x + 9'd1 : pend_addr;
 wire [14:0] build_port1_data = clear_port1 ? 15'd0 : pend_pixel;
 
@@ -261,7 +265,7 @@ jtframe_dual_ram #(.DW(15), .AW(9)) u_line_bank0 (
     .q0    (line_bank0_build_q),
     .clk1  (clk),
     .data1 (build_port1_data),
-    .addr1 (build_bank ? scan_x : build_port1_addr),
+    .addr1 ((build_port1_busy && !build_bank) ? build_port1_addr : scan_x),
     .we1   (build_port1_write && !build_bank),
     .q1    (line_bank0_scan_q)
 );
@@ -274,7 +278,7 @@ jtframe_dual_ram #(.DW(15), .AW(9)) u_line_bank1 (
     .q0    (line_bank1_build_q),
     .clk1  (clk),
     .data1 (build_port1_data),
-    .addr1 (build_bank ? build_port1_addr : scan_x),
+    .addr1 ((build_port1_busy && build_bank) ? build_port1_addr : scan_x),
     .we1   (build_port1_write && build_bank),
     .q1    (line_bank1_scan_q)
 );
