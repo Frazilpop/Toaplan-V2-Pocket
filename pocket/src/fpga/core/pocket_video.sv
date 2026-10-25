@@ -40,7 +40,9 @@
 //      - The scaler mode is chosen by the core: the first cycle after DE
 //        falls carries the end-of-line word "Set Scaler Slot" (function 0 in
 //        bits 2:0, the slot in bits 23:13), video.json's scaler_modes in
-//        order. Slot 0 is ROT270, slot 1 ROT0 (Knuckle Bash).
+//        order. Slot 0 is ROT270, slot 1 ROT0 (Knuckle Bash, and the
+//        vertical games in Tate (left)), slot 2 turned 180 (Tate (right)):
+//        pocket_rotate.
 
 `default_nettype none
 
@@ -49,7 +51,7 @@ module pocket_video (
     input  wire        ce_pix,
     input  wire        hs, vs, hblank, vblank,
     input  wire [7:0]  r, g, b,
-    input  wire [2:0]  scaler_slot,    // static once the ROM is loaded
+    input  wire [2:0]  scaler_slot,    // changes only on a load or a setting
 
     input  wire        clk_vid,        // 6.75 MHz, same PLL as clk
     output reg  [23:0] video_rgb,

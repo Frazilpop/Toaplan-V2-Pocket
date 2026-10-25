@@ -423,6 +423,16 @@ wire [31:0] cmd_bridge_rd_data;
 //                      game, the one way out of the test mode.
 //   0xF100000C         write: reset the game (1 ms)
 //   0xF1000014 [0]     diagnostic overlay (pocket_diag), see DIAGNOSTICS
+//   0xF1000018 [1:0]   Screen Rotation, for the vertical games (MAME's
+//                      ROT270 sets; Knuckle Bash, ROT0, ignores it): 0
+//                      Upright, the picture turned to stand on the Pocket
+//                      held as it is; 1 Tate (left), the board's picture as
+//                      it is, full width, the Pocket turned a quarter
+//                      anticlockwise; 2 Tate (right), the same turned half
+//                      round, the Pocket turned a quarter clockwise. The
+//                      scaler mode (video, below) and player 1's D-pad
+//                      (inputs) both follow it (pocket_rotate). Kept between
+//                      sessions (persist), read back for APF.
 //
 // Both actions are chosen with the Pocket's menu open, while the game is
 // paused; a reset is complete long before the menu closes, and the game
@@ -434,6 +444,7 @@ reg  [31:0] opt_74   = 32'd0;
 wire        eeprom_74;                      // the board is FixEight's (below)
 wire [31:0] nv_bridge_rd;
 reg         diag_74  = 1'b0;
+reg  [1:0]  rot_74   = 2'd0;
 reg  [16:0] hrst_cnt = 17'd0;               //   1 ms at 74.25 MHz = 74,250
 wire        hrst_74  = (hrst_cnt != 17'd0);
 wire [31:0] opt_wr   = bridge_wr_data & OPT_MENU;
@@ -449,6 +460,7 @@ always @(posedge clk_74a) begin
         end
         32'hF100000C: hrst_cnt <= 17'd74250;
         32'hF1000014: diag_74  <= bridge_wr_data[0];
+        32'hF1000018: rot_74   <= bridge_wr_data[1:0];
         default: ;
         endcase
     end
@@ -458,6 +470,7 @@ always @(posedge clk_74a) begin
     casez (bridge_addr)
     32'hF1000000: bridge_rd_data <= opt_74;
     32'hF1000014: bridge_rd_data <= {31'd0, diag_74};
+    32'hF1000018: bridge_rd_data <= {30'd0, rot_74};
     32'h2???????: bridge_rd_data <= nv_bridge_rd;
     32'hF8??????: bridge_rd_data <= cmd_bridge_rd_data;
     default:      bridge_rd_data <= 32'd0;
@@ -627,11 +640,12 @@ core_bridge_cmd icb (
 
 // ===================================================== settings -> 94.5 MHz
 wire        opt_test, host_rst, diag_opt;
+wire [1:0]  rot_sys;
 
-pocket_sync_bus #(.W(3), .INIT(3'b000)) s_cfgsys (
+pocket_sync_bus #(.W(5), .INIT(5'b00000)) s_cfgsys (
     .clk (clk_sys),
-    .d   ({opt_74[0], hrst_74,  diag_74}),
-    .q   ({opt_test,  host_rst, diag_opt})
+    .d   ({rot_74,  opt_74[0], hrst_74,  diag_74}),
+    .q   ({rot_sys, opt_test,  host_rst, diag_opt})
 );
 
 // DSWA, DSWB, JMPR as the board takes them: XORed into the header's
@@ -651,8 +665,12 @@ wire board_rst = cold_rst | ~reset_n_sys | host_rst | ~rom_loaded | ~cfg_valid;
 // low (dogyuun_inputs), and key[6:0] is {X,B,A,right,left,down,up}, so the
 // D-pad's four bits go in reversed: A is button 1 (shot), B button 2 (bomb),
 // X button 3. Select is the coin, Start is start. The picture is turned by
-// APF (video.json), not by the board, so the D-pad needs no turning: the
-// game's up is the Pocket's up on the turned picture.
+// APF (video.json), not by the board, so Upright needs no turning of the
+// D-pad: the game's up is the Pocket's up on the turned picture. In Tate
+// (Screen Rotation) the Pocket is held on its side, so player 1's D-pad is
+// turned to the game's directions, the Pocket's own controls only
+// (cont1_key type 1); player 2 and the Dock's player 3 never turn
+// (pocket_rotate).
 //
 // R (key[9], trig_r1) is rapid shot: button 1 pressed for one frame in four,
 // a 15 Hz tap. Batsugun reads its buttons once a frame, on line 257, and in
@@ -669,6 +687,20 @@ wire [15:0] k1, k2, k3;
 synch_3 #(.WIDTH(16)) s_k1 (.i(cont1_key[15:0]), .o(k1), .clk(clk_sys), .rise(), .fall());
 synch_3 #(.WIDTH(16)) s_k2 (.i(cont2_key[15:0]), .o(k2), .clk(clk_sys), .rise(), .fall());
 synch_3 #(.WIDTH(16)) s_k3 (.i(cont3_key[15:0]), .o(k3), .clk(clk_sys), .rise(), .fall());
+wire       k1_pocket;
+synch_3 s_k1_type (.i(cont1_key[31:28] == 4'h1), .o(k1_pocket), .clk(clk_sys), .rise(), .fall());
+
+wire [2:0] rot_slot;
+wire [3:0] d1;                              //   player 1's D-pad, turned
+reg        rot0_q = 1'b0;                   //   the game is ROT0 (video, below)
+pocket_rotate u_rotate (
+    .rot         (rot_sys),
+    .rot0        (rot0_q),
+    .pocket_pad  (k1_pocket),
+    .dpad        (k1[3:0]),
+    .scaler_slot (rot_slot),
+    .dpad_game   (d1)
+);
 
 reg  [1:0] rapid1   = 2'd0;                 //   the rapid press's phase, 0 pressed
 reg  [1:0] rapid2   = 2'd0;
@@ -676,7 +708,7 @@ reg  [1:0] rapid3   = 2'd0;
 wire [2:0] rapid_b1 = {k3[9] && rapid3 == 2'd0, k2[9] && rapid2 == 2'd0,
                        k1[9] && rapid1 == 2'd0};
 
-wire [6:0] joy1_n  = ~{k1[6:5], k1[4] | rapid_b1[0], k1[0], k1[1], k1[2], k1[3]};
+wire [6:0] joy1_n  = ~{k1[6:5], k1[4] | rapid_b1[0], d1[0], d1[1], d1[2], d1[3]};
 wire [6:0] joy2_n  = ~{k2[6:5], k2[4] | rapid_b1[1], k2[0], k2[1], k2[2], k2[3]};
 wire [6:0] joy3_n  = ~{k3[6:5], k3[4] | rapid_b1[2], k3[0], k3[1], k3[2], k3[3]};
 wire [3:0] coin_n  = ~{1'b0, k3[14], k2[14], k1[14]};
@@ -1170,8 +1202,9 @@ assign video_rgb_clock    = clk_vid;
 assign video_rgb_clock_90 = clk_vid90;
 
 // The game's rotation, from the image header: video.json's scaler mode 1
-// for ROT0, 0 for ROT270. Registered here; it changes only on a load.
-reg rot0_q = 1'b0;
+// for ROT0, 0 for ROT270, and for the vertical games Screen Rotation's 1
+// (Tate (left), the picture as it is) or 2 (Tate (right), turned 180)
+// (pocket_rotate, inputs above). Registered here; it changes only on a load.
 always @(posedge clk_sys) rot0_q <= cfg_rot0;
 
 pocket_video u_video (
@@ -1184,7 +1217,7 @@ pocket_video u_video (
     .r         (mr),
     .g         (mg),
     .b         (mb),
-    .scaler_slot ({2'b00, rot0_q}),
+    .scaler_slot (rot_slot),
     .clk_vid   (clk_vid),
     .video_rgb (video_rgb),
     .video_de  (video_de),

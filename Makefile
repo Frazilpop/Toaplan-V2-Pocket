@@ -13,6 +13,9 @@
 #                 with jtframe's SDRAM model, MAME as the oracle
 #                 (tools/pocket/compare_bus.py, compare_frame.py,
 #                 compare_wav.py)
+#   make rotate   Screen Rotation: pocket_rotate's scaler slot through
+#                 pocket_video's end-of-line word and its turned D-pad, for
+#                 every game kind, setting and controller (sim/pocket)
 #   make clean
 #
 # Run tools/bootstrap.sh first: fx68k, jt6295 and IKAOPM are used in place
@@ -50,7 +53,7 @@ FEED      ?= build/mame/dogyuun_v25_feed.txt
 CLOCKS    ?= 600000000
 CEN       ?= 25
 
-.PHONY: lint v25 sim clean
+.PHONY: lint v25 sim rotate clean
 lint:
 	@test -d third_party/fx68k || { echo "run tools/bootstrap.sh first"; exit 1; }
 	$(VERILATOR) $(VFLAGS) $(DEFINES) --top-module dogyuun_game $(BOARD) $(THIRD)
@@ -74,5 +77,13 @@ sim:
 	sim/batsugun/build.sh > build/sim_build.log 2>&1 || { grep -m5 Error build/sim_build.log; exit 1; }
 	@echo "sim: build/obj_batsugun/tb_batsugun"
 
+rotate:
+	$(VERILATOR) --binary --timing -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL \
+	    -Wno-BLKSEQ -Wno-PROCASSINIT --Mdir build/obj_rotate --top-module tb_rotate -o tb_rotate \
+	    sim/pocket/tb_rotate.sv pocket/src/fpga/core/pocket_rotate.sv \
+	    pocket/src/fpga/core/pocket_video.sv > build/rotate_build.log 2>&1 || \
+	    { grep -m10 -E 'Error|Warning' build/rotate_build.log; exit 1; }
+	build/obj_rotate/tb_rotate
+
 clean:
-	rm -rf obj_dir build/tmp build/v25 build/obj_batsugun
+	rm -rf obj_dir build/tmp build/v25 build/obj_batsugun build/obj_rotate
