@@ -48,7 +48,7 @@ localparam [4:0] ST_GFX_GAP       = 5'd9;
 localparam [4:0] ST_GFX_HI        = 5'd10;
 localparam [4:0] ST_FETCH_STORE   = 5'd11;
 localparam [4:0] ST_COMP_READ     = 5'd12;
-localparam [4:0] ST_COMP_WAIT     = 5'd13;
+localparam [4:0] ST_COMP_PIPE     = 5'd13;
 localparam [4:0] ST_COMP_WRITE    = 5'd14;
 localparam [4:0] ST_DONE          = 5'd15;
 
@@ -77,6 +77,11 @@ reg        active_bank = 1'b0;
 reg        build_bank = 1'b1;
 reg        build_pending = 1'b0;
 reg [15:0] build_cycle_count = 16'd0;
+// Layers 1 and 2 compose one pixel a clock: port 0 reads pixel N's line
+// word while port 1 writes pixel N-1, held here, if it wins.
+reg [8:0]  pend_addr = 9'd0;
+reg [14:0] pend_pixel = 15'd0;
+reg        pend_flush = 1'b0;
 
 function automatic [8:0] layer_x_origin;
     input [1:0] which;
@@ -230,13 +235,21 @@ wire [14:0] line_bank0_scan_q;
 wire [14:0] line_bank1_scan_q;
 wire [14:0] line_build_q = build_bank ?
                               line_bank1_build_q : line_bank0_build_q;
-wire candidate_wins = (candidate_pen != 4'h0) &&
-                      ((layer == 2'd0) ||
-                       (candidate_priority >= line_build_q[14:11]));
+// Port 0: the clear's even pixels, layer 0's writes (over the cleared
+// line, no read) and the reads of layers 1 and 2. Port 1 of the bank being
+// built (the scan reads the other bank): the clear's odd pixels and the
+// held pixel of layers 1 and 2.
 wire line_write = (state == ST_CLEAR) ||
-                  ((state == ST_COMP_WRITE) && candidate_wins);
+                  ((state == ST_COMP_WRITE) && (candidate_pen != 4'h0));
 wire [14:0] line_write_data = (state == ST_CLEAR) ?
                               15'd0 : candidate_pixel;
+wire pend_wins = (pend_pixel[3:0] != 4'h0) &&
+                 (pend_pixel[14:11] >= line_build_q[14:11]);
+wire pend_write = ((state == ST_COMP_PIPE) || pend_flush) && pend_wins;
+wire clear_port1 = state == ST_CLEAR;
+wire build_port1_write = clear_port1 || pend_write;
+wire [8:0] build_port1_addr = clear_port1 ? clear_x + 9'd1 : pend_addr;
+wire [14:0] build_port1_data = clear_port1 ? 15'd0 : pend_pixel;
 
 assign scan_pixel = active_bank ? line_bank1_scan_q : line_bank0_scan_q;
 
@@ -247,9 +260,9 @@ jtframe_dual_ram #(.DW(15), .AW(9)) u_line_bank0 (
     .we0   (line_write && !build_bank),
     .q0    (line_bank0_build_q),
     .clk1  (clk),
-    .data1 (15'd0),
-    .addr1 (scan_x),
-    .we1   (1'b0),
+    .data1 (build_port1_data),
+    .addr1 (build_bank ? scan_x : build_port1_addr),
+    .we1   (build_port1_write && !build_bank),
     .q1    (line_bank0_scan_q)
 );
 
@@ -260,11 +273,19 @@ jtframe_dual_ram #(.DW(15), .AW(9)) u_line_bank1 (
     .we0   (line_write && build_bank),
     .q0    (line_bank1_build_q),
     .clk1  (clk),
-    .data1 (15'd0),
-    .addr1 (scan_x),
-    .we1   (1'b0),
+    .data1 (build_port1_data),
+    .addr1 (build_bank ? build_port1_addr : scan_x),
+    .we1   (build_port1_write && build_bank),
     .q1    (line_bank1_scan_q)
 );
+
+// As the object engine: a build runs from its start to the next line
+// event's commit; a commit that finds it still running shows the line as
+// far as it got and the next build starts on time.
+wire late_commit = commit && !build_pending && (state != ST_IDLE);
+wire begin_build = start && ((state == ST_IDLE) || late_commit);
+wire next_active_bank = (commit && (build_pending || late_commit)) ?
+                        build_bank : active_bank;
 
 always @(posedge clk) begin
     done <= 1'b0;
@@ -302,7 +323,12 @@ always @(posedge clk) begin
         scan_epoch <= 1'b0;
         scan_valid <= 1'b0;
         vram_addr <= 13'd0;
+        pend_addr <= 9'd0;
+        pend_pixel <= 15'd0;
+        pend_flush <= 1'b0;
     end else begin
+        pend_flush <= 1'b0;
+
         if (commit && build_pending) begin
             active_bank <= build_bank;
             scan_y <= target_y_latched;
@@ -320,29 +346,15 @@ always @(posedge clk) begin
             build_cycle_count <= build_cycle_count + 16'd1;
 
         case (state)
-            ST_IDLE: begin
-                busy <= 1'b0;
-                if (start) begin
-                    busy <= 1'b1;
-                    build_bank <= (commit && build_pending) ?
-                                  active_bank : ~active_bank;
-                    target_y_latched <= target_y;
-                    target_epoch_latched <= target_epoch;
-                    scrolls_latched <= scrolls;
-                    scroll_flip_latched <= scroll_flip;
-                    clear_x <= 9'd0;
-                    build_cycle_count <= 16'd0;
-                    state <= ST_CLEAR;
-                end
-            end
+            ST_IDLE: busy <= 1'b0;
 
             ST_CLEAR: begin
-                if (clear_x == 9'd319) begin
+                if (clear_x == 9'd318) begin
                     layer <= 2'd0;
                     group <= 6'd0;
                     state <= ST_LAYER_SETUP;
                 end else begin
-                    clear_x <= clear_x + 9'd1;
+                    clear_x <= clear_x + 9'd2;
                 end
             end
 
@@ -407,14 +419,25 @@ always @(posedge clk) begin
                 end
             end
 
-            ST_COMP_READ: state <= ST_COMP_WAIT;
-            ST_COMP_WAIT: state <= ST_COMP_WRITE;
+            // Layers 1 and 2: COMP_READ presents pixel 0's address, then
+            // COMP_PIPE presents pixel N's while pixel N-1 is written; pixel
+            // 7 is written by the flush in the clock after.
+            ST_COMP_READ: begin
+                pend_addr <= compose_addr;
+                pend_pixel <= candidate_pixel;
+                pixel <= 3'd1;
+                state <= ST_COMP_PIPE;
+            end
 
-            ST_COMP_WRITE: begin
+            ST_COMP_PIPE, ST_COMP_WRITE: begin
+                if (state == ST_COMP_PIPE) begin
+                    pend_addr <= compose_addr;
+                    pend_pixel <= candidate_pixel;
+                    if (pixel == 3'd7)
+                        pend_flush <= 1'b1;
+                end
                 if (pixel != 3'd7) begin
                     pixel <= pixel + 3'd1;
-                    state <= (layer == 2'd0) ?
-                             ST_COMP_WRITE : ST_COMP_READ;
                 end else if (group != 6'd39) begin
                     group <= group + 6'd1;
                     source_x0 <= layer_flip_x ?
@@ -444,6 +467,31 @@ always @(posedge clk) begin
 
             default: state <= ST_IDLE;
         endcase
+
+        if (late_commit) begin
+            active_bank <= build_bank;
+            scan_y <= target_y_latched;
+            scan_epoch <= target_epoch_latched;
+            scan_valid <= 1'b1;
+            build_pending <= 1'b0;
+            deadline_miss <= 1'b1;
+            last_build_cycles <= build_cycle_count;
+            pend_flush <= 1'b0;
+            busy <= 1'b0;
+            state <= ST_IDLE;
+        end
+
+        if (begin_build) begin
+            busy <= 1'b1;
+            build_bank <= ~next_active_bank;
+            target_y_latched <= target_y;
+            target_epoch_latched <= target_epoch;
+            scrolls_latched <= scrolls;
+            scroll_flip_latched <= scroll_flip;
+            clear_x <= 9'd0;
+            build_cycle_count <= 16'd0;
+            state <= ST_CLEAR;
+        end
     end
 end
 

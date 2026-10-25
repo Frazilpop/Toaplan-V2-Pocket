@@ -93,7 +93,8 @@ module tb_batsugun (
     output     [3:0]   dbg_ba_ack,
     output     [3:0]   dbg_ba_rdy,
     output     [3:0]   dbg_engine_busy,
-    output     [3:0]   dbg_line_valid
+    output     [3:0]   dbg_line_valid,
+    output     [63:0]  dbg_build_cycles   // the four engines' last line builds
 );
 
 localparam AW = 22;
@@ -295,6 +296,8 @@ assign dbg_ba_ack = ba_ack;
 assign dbg_ba_rdy = ba_rdy;
 assign dbg_engine_busy = u_game.video_engine_busy;
 assign dbg_line_valid = u_game.video_debug_line_valid;
+assign dbg_build_cycles = {u_game.video_gp1_object_cycles, u_game.video_gp1_tile_cycles,
+                           u_game.video_gp0_object_cycles, u_game.video_gp0_tile_cycles};
 assign vid_color         = u_game.video_palette_addr;
 assign vid_palette       = u_game.video_palette_data;
 
