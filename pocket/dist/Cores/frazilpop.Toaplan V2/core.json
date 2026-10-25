@@ -3,7 +3,8 @@
         "magic": "APF_VER_1",
         "metadata": {
             "platform_ids": [
-                "toaplan2"
+                "toaplan2",
+                "analogizer"
             ],
             "shortname": "Toaplan V2",
             "description": "Toaplan Version 2 arcade board – Batsugun, Dogyuun and more.",
@@ -22,7 +23,7 @@
             },
             "hardware": {
                 "link_port": false,
-                "cartridge_adapter": -1
+                "cartridge_adapter": 0
             }
         },
         "cores": [

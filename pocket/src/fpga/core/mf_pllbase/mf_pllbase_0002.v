@@ -19,6 +19,8 @@
 //   outclk_2   6.75 MHz  /112  APF video_rgb_clock: the board's pixel rate
 //                              (27 MHz / 4), one pixel a cycle
 //   outclk_3   6.75 MHz  /112  video_rgb_clock_90, 90 degrees (37037 ps)
+//   outclk_4   27 MHz    /28   the Analogizer (pocket_analogizer): four
+//                              clocks a dot, and the adapter's DAC clock
 //
 // All are exact. The SDRAM pin clock is forwarded through a DDIO output
 // register (pin_ddio_clk) so that it leaves the FPGA through the same kind
@@ -45,6 +47,8 @@ module  mf_pllbase_0002(
 
 	// interface 'outclk3'
 	output wire outclk_3,
+	// interface 'outclk4'
+	output wire outclk_4,
 
 	// interface 'locked'
 	output wire locked
@@ -54,7 +58,7 @@ module  mf_pllbase_0002(
 		.fractional_vco_multiplier("false"),
 		.reference_clock_frequency("74.25 MHz"),
 		.operation_mode("normal"),
-		.number_of_clocks(4),
+		.number_of_clocks(5),
 		.output_clock_frequency0("94.500000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
@@ -67,7 +71,7 @@ module  mf_pllbase_0002(
 		.output_clock_frequency3("6.750000 MHz"),
 		.phase_shift3("37037 ps"),
 		.duty_cycle3(50),
-		.output_clock_frequency4("0 MHz"),
+		.output_clock_frequency4("27.000000 MHz"),
 		.phase_shift4("0 ps"),
 		.duty_cycle4(50),
 		.output_clock_frequency5("0 MHz"),
@@ -113,7 +117,7 @@ module  mf_pllbase_0002(
 		.pll_subtype("General")
 	) altera_pll_i (
 		.rst	(rst),
-		.outclk	({outclk_3, outclk_2, outclk_1, outclk_0}),
+		.outclk	({outclk_4, outclk_3, outclk_2, outclk_1, outclk_0}),
 		.locked	(locked),
 		.fboutclk	( ),
 		.fbclk	(1'b0),

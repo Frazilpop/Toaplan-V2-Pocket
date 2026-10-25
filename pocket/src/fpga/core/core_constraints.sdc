@@ -14,12 +14,13 @@ set clk_sys      [get_clocks -nowarn "${pll_path}|general\[0\].gpll~PLL_OUTPUT_C
 set clk_sdram_ps [get_clocks -nowarn "${pll_path}|general\[1\].gpll~PLL_OUTPUT_COUNTER|divclk"]
 set clk_vid      [get_clocks -nowarn "${pll_path}|general\[2\].gpll~PLL_OUTPUT_COUNTER|divclk"]
 set clk_vid90    [get_clocks -nowarn "${pll_path}|general\[3\].gpll~PLL_OUTPUT_COUNTER|divclk"]
+set clk_anz      [get_clocks -nowarn "${pll_path}|general\[4\].gpll~PLL_OUTPUT_COUNTER|divclk"]
 
 # An empty collection turns set_clock_groups and set_multicycle_path into
 # silent no-ops and the build "passes" untimed — upstream's Kaneko16.sdc has
 # the story. Here that is an error, not a warning.
 foreach {name c} [list sys $clk_sys sdram_ps $clk_sdram_ps \
-                       vid $clk_vid vid90 $clk_vid90] {
+                       vid $clk_vid vid90 $clk_vid90 anz $clk_anz] {
     if {[get_collection_size $c] == 0} {
         post_message -type error "core_constraints.sdc: PLL output '$name' not found under $pll_path. The constraints below would be no-ops; fix the path."
     }
@@ -42,13 +43,19 @@ create_generated_clock -name dram_clk_pin \
 # Every one of them is listed in core_top.v.
 #
 # The PLL outputs are ONE group and are timed against each other, because
-# two crossings depend on it:
+# three crossings depend on it:
 #
 #   94.5 -> 6.75  pocket_video: `hold` (94.5 MHz, loaded on ce_pix) sampled
 #               on every 6.75 MHz edge. Every 6.75 MHz edge coincides with a
 #               94.5 MHz edge, so this is a normal synchronous path. Timing it
 #               is what makes "a 6.75 MHz edge on the reload edge sees the old
 #               pixel" true in silicon, not just in the RTL comment.
+#   94.5 -> 27    pocket_analogizer: its own `hold` (94.5 MHz, loaded on
+#               ce_pix) sampled on every 27 MHz edge, and back the SNAC
+#               controllers' words into core_top's input synchronisers.
+#               The two meet every 74 ns (56 VCO cycles), and the tightest
+#               launch-to-latch is half a 94.5 MHz period (5.29 ns), which
+#               the fitter times like any other path.
 #   94.5 -> pin   the SDRAM I/O below, against dram_clk_pin.
 set_clock_groups -asynchronous \
     -group [get_clocks {clk_74a}] \

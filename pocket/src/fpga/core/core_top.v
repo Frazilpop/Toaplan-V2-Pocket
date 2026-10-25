@@ -13,8 +13,10 @@
 //   clk_sdram_ps   94.5 MHz   180 deg, forwarded to dram_clk
 //   clk_vid        6.75 MHz   APF video bus, one pixel a clock
 //   clk_vid90      6.75 MHz   90 deg, for APF's video DDR
+//   clk_anz        27 MHz     the Analogizer (pocket_analogizer): four clocks
+//                             a dot, and the adapter's DAC clock
 //
-// 94.5 and 6.75 come from one VCO and are synchronous; everything they share
+// 94.5, 6.75 and 27 come from one VCO and are synchronous; everything they share
 // with clk_74a crosses through a synchroniser, a dcfifo or a dual-clock RAM,
 // and core_constraints.sdc cuts exactly those.
 //
@@ -23,6 +25,8 @@
 //   0x00000000-   ROM image data slot -> the board's loader   pocket_rom_loader
 //   0x20000000-   EEPROM save slot, 128 bytes, r/w (FixEight)   pocket_nvram
 //   0xF1000000-   options (interact.json)                     r/w, see below
+//   0xF7000000    analogizer.bin, the Analogizer's settings   pocket_analogizer
+//                 (write only)
 //   0xF8000000-   APF command bridge                          core_bridge_cmd
 //
 // DATA SLOTS (dist/Cores/frazilpop.Toaplan V2/data.json), in table order:
@@ -33,6 +37,8 @@
 //             factory contents come with the image (its eeprom region, the
 //             set's .nv); APF writes a save over them after the image, both
 //             with the core in reset, and reads it back at shutdown.
+//   [3] id 330 analogizer.bin at 0xF7000000, from Assets/analogizer/common/
+//             (platform index 1), if it is there
 //
 // The image's 4 KB header says which board and game it is (clocks, work RAM,
 // the V25's decryption, the DIP defaults, the graphics sizes); the board
@@ -279,21 +285,8 @@ assign port_ir_rx_disable = 1;
 // bridge endianness
 assign bridge_endian_little = 0;
 
-// cart is unused, so set all level translators accordingly
-// directions are 0:IN, 1:OUT
-assign cart_tran_bank3 = 8'hzz;
-assign cart_tran_bank3_dir = 1'b0;
-assign cart_tran_bank2 = 8'hzz;
-assign cart_tran_bank2_dir = 1'b0;
-assign cart_tran_bank1 = 8'hzz;
-assign cart_tran_bank1_dir = 1'b0;
-assign cart_tran_bank0 = 4'hf;
-assign cart_tran_bank0_dir = 1'b1;
-assign cart_tran_pin30 = 1'b0;      // reset or cs2, we let the hw control it by itself
-assign cart_tran_pin30_dir = 1'bz;
-assign cart_pin30_pwroff_reset = 1'b0;  // hardware can control this
-assign cart_tran_pin31 = 1'bz;      // input
-assign cart_tran_pin31_dir = 1'b0;  // input
+// the cartridge slot is the Analogizer's (pocket_analogizer, after the
+// overlay), idle as the template leaves it when there is no adapter
 
 // link port is unused, set to input only to be safe
 // each bit may be bidirectional in some applications
@@ -345,7 +338,7 @@ assign sram_ub_n  = 1;
 assign sram_lb_n  = 1;
 
 // ================================================================= clocks
-wire clk_sys, clk_sdram_ps, clk_vid, clk_vid90;
+wire clk_sys, clk_sdram_ps, clk_vid, clk_vid90, clk_anz;
 wire pll_core_locked;
 
 mf_pllbase mp1 (
@@ -355,6 +348,7 @@ mf_pllbase mp1 (
     .outclk_1 ( clk_sdram_ps ),
     .outclk_2 ( clk_vid ),
     .outclk_3 ( clk_vid90 ),
+    .outclk_4 ( clk_anz ),
     .locked   ( pll_core_locked )
 );
 
@@ -683,12 +677,20 @@ wire board_rst = cold_rst | ~reset_n_sys | host_rst | ~rom_loaded | ~cfg_valid;
 // fires on the frame it is pressed.
 //
 // FixEight takes a third player, the dock's controller 3, the same way.
+//
+// An Analogizer's SNAC controllers (pocket_analogizer) stand in for the
+// Pocket's controls of the players analogizer.bin gives them to, as they
+// are: their words are in cont_key's order. Nor are they turned: they play
+// to the adapter's picture, which is the board's own, never turned.
+wire [15:0] key1, key2, key3;
+wire        p1_snac;
 wire [15:0] k1, k2, k3;
-synch_3 #(.WIDTH(16)) s_k1 (.i(cont1_key[15:0]), .o(k1), .clk(clk_sys), .rise(), .fall());
-synch_3 #(.WIDTH(16)) s_k2 (.i(cont2_key[15:0]), .o(k2), .clk(clk_sys), .rise(), .fall());
-synch_3 #(.WIDTH(16)) s_k3 (.i(cont3_key[15:0]), .o(k3), .clk(clk_sys), .rise(), .fall());
+synch_3 #(.WIDTH(16)) s_k1 (.i(key1), .o(k1), .clk(clk_sys), .rise(), .fall());
+synch_3 #(.WIDTH(16)) s_k2 (.i(key2), .o(k2), .clk(clk_sys), .rise(), .fall());
+synch_3 #(.WIDTH(16)) s_k3 (.i(key3), .o(k3), .clk(clk_sys), .rise(), .fall());
 wire       k1_pocket;
-synch_3 s_k1_type (.i(cont1_key[31:28] == 4'h1), .o(k1_pocket), .clk(clk_sys), .rise(), .fall());
+synch_3 s_k1_type (.i(cont1_key[31:28] == 4'h1 && !p1_snac), .o(k1_pocket),
+                   .clk(clk_sys), .rise(), .fall());
 
 wire [2:0] rot_slot;
 wire [3:0] d1;                              //   player 1's D-pad, turned
@@ -1197,6 +1199,45 @@ wire [7:0] mr = inmenu_sys ? 8'd0 : dr;
 wire [7:0] mg = inmenu_sys ? 8'd0 : dg;
 wire [7:0] mb = inmenu_sys ? 8'd0 : db;
 
+// ============================================================= Analogizer
+//
+// The board's raster, as the Pocket's screen gets it (the overlay in, black
+// under the menu, the syncs running on), out of the cartridge slot; and
+// SNAC controllers in (inputs, above). pocket_analogizer says how it is set.
+// The picture is the board's unturned: the vertical games want the monitor
+// on its side, as in the arcade, and Screen Rotation turns only the Pocket's
+// screen.
+wire anz_pocket_off;
+pocket_analogizer u_analogizer (
+    .clk_74a        (clk_74a),
+    .bridge_wr      (bridge_wr),
+    .bridge_addr    (bridge_addr),
+    .bridge_wr_data (bridge_wr_data),
+    .clk_sys        (clk_sys),
+    .ce_pix         (pxl_cen),
+    .hs             (vid_hs),     .vs     (vid_vs),
+    .hblank         (vid_hblank), .vblank (vid_vblank),
+    .r              (mr),         .g      (mg),       .b  (mb),
+    .pocket_off     (anz_pocket_off),
+    .clk_anz        (clk_anz),
+    .cont1_key      (cont1_key[15:0]), .cont2_key (cont2_key[15:0]),
+    .cont3_key      (cont3_key[15:0]),
+    .key1           (key1),       .key2   (key2),     .key3 (key3),
+    .p1_snac        (p1_snac),
+    .cart_tran_bank2 (cart_tran_bank2), .cart_tran_bank2_dir (cart_tran_bank2_dir),
+    .cart_tran_bank3 (cart_tran_bank3), .cart_tran_bank3_dir (cart_tran_bank3_dir),
+    .cart_tran_bank1 (cart_tran_bank1), .cart_tran_bank1_dir (cart_tran_bank1_dir),
+    .cart_tran_bank0 (cart_tran_bank0), .cart_tran_bank0_dir (cart_tran_bank0_dir),
+    .cart_tran_pin30 (cart_tran_pin30), .cart_tran_pin30_dir (cart_tran_pin30_dir),
+    .cart_pin30_pwroff_reset (cart_pin30_pwroff_reset),
+    .cart_tran_pin31 (cart_tran_pin31), .cart_tran_pin31_dir (cart_tran_pin31_dir)
+);
+
+// the Pocket's own screen black when analogizer.bin asks for it
+wire [7:0] pr = anz_pocket_off ? 8'd0 : mr;
+wire [7:0] pg = anz_pocket_off ? 8'd0 : mg;
+wire [7:0] pb = anz_pocket_off ? 8'd0 : mb;
+
 // ================================================================== video
 assign video_rgb_clock    = clk_vid;
 assign video_rgb_clock_90 = clk_vid90;
@@ -1214,9 +1255,9 @@ pocket_video u_video (
     .vs        (vid_vs),
     .hblank    (vid_hblank),
     .vblank    (vid_vblank),
-    .r         (mr),
-    .g         (mg),
-    .b         (mb),
+    .r         (pr),
+    .g         (pg),
+    .b         (pb),
     .scaler_slot (rot_slot),
     .clk_vid   (clk_vid),
     .video_rgb (video_rgb),
