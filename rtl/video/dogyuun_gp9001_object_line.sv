@@ -355,6 +355,15 @@ jtframe_dual_ram #(.DW(15), .AW(9)) u_line_bank1 (
     .q1    (line_bank1_scan_q)
 );
 
+// The build for a line has until that line's commit, one line event after
+// its start. late_commit: the commit came first. A build starts at the
+// start event when the engine is idle or is being cut short by that same
+// event's commit; it builds into the bank the scan leaves.
+wire late_commit = commit && !build_pending && (state != ST_IDLE);
+wire begin_build = start && ((state == ST_IDLE) || late_commit);
+wire next_active_bank = (commit && (build_pending || late_commit)) ?
+                        build_bank : active_bank;
+
 always @(posedge clk) begin
     done <= 1'b0;
     deadline_miss <= 1'b0;
@@ -439,28 +448,7 @@ always @(posedge clk) begin
             build_cycle_count <= build_cycle_count + 16'd1;
 
         case (state)
-            ST_IDLE: begin
-                busy <= 1'b0;
-                if (start) begin
-                    busy <= 1'b1;
-                    build_bank <= (commit && build_pending) ?
-                                  active_bank : ~active_bank;
-                    target_y_latched <= target_y;
-                    target_epoch_latched <= target_epoch;
-                    scrolls_latched <= scrolls;
-                    scroll_flip_latched <= scroll_flip;
-                    clear_x <= 9'd0;
-                    descriptor <= 8'd0;
-                    old_x <= (scroll_flip[6] ? 9'd379 : 9'd460) -
-                             scrolls[104:96];
-                    old_y <= (scroll_flip[7] ? 9'd264 : 9'd495) -
-                             scrolls[120:112];
-                    build_cycle_count <= 16'd0;
-                    visible_chunk_count <= 9'd0;
-                    capacity_overflow <= 1'b0;
-                    state <= ST_CLEAR;
-                end
-            end
+            ST_IDLE: busy <= 1'b0;
 
             ST_CLEAR: begin
                 if (clear_x == 9'd318) begin
@@ -479,6 +467,18 @@ always @(posedge clk) begin
                 desc_attr <= object_data;
                 object_addr <= {descriptor, 2'b10};
                 state <= ST_DESC_CAPTURE1;
+                // A disabled object (attribute bit 15 clear) draws nothing
+                // and moves no chained position: go straight to the next
+                // one's attribute word, two clocks instead of six.
+                if (!object_data[15]) begin
+                    if (descriptor == 8'hff) begin
+                        state <= ST_DONE;
+                    end else begin
+                        descriptor <= descriptor + 8'd1;
+                        object_addr <= {descriptor + 8'd1, 2'b00};
+                        state <= ST_DESC_WAIT0;
+                    end
+                end
             end
             ST_DESC_WAIT1: state <= ST_DESC_CAPTURE1;
             ST_DESC_CAPTURE1: begin
@@ -627,6 +627,45 @@ always @(posedge clk) begin
 
             default: state <= ST_IDLE;
         endcase
+
+        // A line still building when its commit comes is shown as far as
+        // it got (the objects walked so far), and the next line starts on
+        // time: a late line loses its last objects for one frame instead of
+        // blanking the whole line and the one after it. The bank was
+        // cleared first, so what is drawn is right. A graphics read left in
+        // flight lands in the slot's cache during the next build's clear,
+        // before that build asks for anything.
+        if (late_commit) begin
+            active_bank <= build_bank;
+            scan_y <= target_y_latched;
+            scan_epoch <= target_epoch_latched;
+            scan_valid <= 1'b1;
+            build_pending <= 1'b0;
+            deadline_miss <= 1'b1;
+            last_build_cycles <= build_cycle_count;
+            pending_draw_flush <= 1'b0;
+            busy <= 1'b0;
+            state <= ST_IDLE;
+        end
+
+        if (begin_build) begin
+            busy <= 1'b1;
+            build_bank <= ~next_active_bank;
+            target_y_latched <= target_y;
+            target_epoch_latched <= target_epoch;
+            scrolls_latched <= scrolls;
+            scroll_flip_latched <= scroll_flip;
+            clear_x <= 9'd0;
+            descriptor <= 8'd0;
+            old_x <= (scroll_flip[6] ? 9'd379 : 9'd460) -
+                     scrolls[104:96];
+            old_y <= (scroll_flip[7] ? 9'd264 : 9'd495) -
+                     scrolls[120:112];
+            build_cycle_count <= 16'd0;
+            visible_chunk_count <= 9'd0;
+            capacity_overflow <= 1'b0;
+            state <= ST_CLEAR;
+        end
     end
 end
 

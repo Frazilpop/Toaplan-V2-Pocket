@@ -338,6 +338,9 @@ int main(int argc, char** argv) {
     uint64_t v25_writes = 0, m68_cycles = 0, miss = 0;
     unsigned missing_max = 0;
     uint64_t vs_ready = 0, vs_color = 0, vs_pal = 0;
+    // Per frame: line deadlines missed (pulses, all four engines) and each
+    // engine's longest line build in clocks (a line is 432 x 14 = 6048).
+    unsigned miss_lines = 0, build_max[4] = {0};
     uint64_t dbg_rd[4] = {0}, dbg_ack[4] = {0}, dbg_rdy[4] = {0}, dbg_busy[4] = {0}, dbg_valid[4] = {0};
 
     // Checkpoints: the model as Verilator saves it, then the harness's
@@ -393,7 +396,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "restored at frame %d, clock %llu\n", frame, (unsigned long long)cyc);
     } else {
         stats = fopen(stats_path.c_str(), "w");
-        fprintf(stats, "frame,clocks,m68_cycles,v25_writes,v25_pc,deadline_miss,m68_wait_backlog_max,px_line_ready,px_color_nz,px_palette_nz\n");
+        fprintf(stats, "frame,clocks,m68_cycles,v25_writes,v25_pc,deadline_miss,m68_wait_backlog_max,px_line_ready,px_color_nz,px_palette_nz,miss_lines,build_gp0_tile,build_gp0_obj,build_gp1_tile,build_gp1_obj\n");
         apply_inputs(0);
     }
     while (frame < frames) {
@@ -448,6 +451,11 @@ int main(int argc, char** argv) {
         if (t->sample && !sample_prev) wav.put((int16_t)t->snd);
         sample_prev = t->sample;
         miss |= t->video_miss;
+        if (t->video_miss) miss_lines++;
+        for (int b = 0; b < 4; b++) {
+            unsigned c = (unsigned)(t->dbg_build_cycles >> (16 * b)) & 0xffff;
+            if (c > build_max[b]) build_max[b] = c;
+        }
         for (int b = 0; b < 4; b++) {
             dbg_rd[b] += (t->dbg_ba_rd >> b) & 1; dbg_ack[b] += (t->dbg_ba_ack >> b) & 1;
             dbg_rdy[b] += (t->dbg_ba_rdy >> b) & 1; dbg_busy[b] += (t->dbg_engine_busy >> b) & 1;
@@ -482,12 +490,15 @@ int main(int argc, char** argv) {
                     fwrite(img.data(), 1, img.size(), f);
                     fclose(f);
                 }
-                fprintf(stats, "%d,%llu,%llu,%llu,%05x,%llx,%u,%llu,%llu,%llu\n", frame,
+                fprintf(stats, "%d,%llu,%llu,%llu,%05x,%llx,%u,%llu,%llu,%llu,%u,%u,%u,%u,%u\n", frame,
                         (unsigned long long)(cyc - cyc0), (unsigned long long)m68_cycles,
                         (unsigned long long)v25_writes, t->v25_pc, (unsigned long long)miss,
                         missing_max, (unsigned long long)vs_ready,
-                        (unsigned long long)vs_color, (unsigned long long)vs_pal);
+                        (unsigned long long)vs_color, (unsigned long long)vs_pal,
+                        miss_lines, build_max[0], build_max[1], build_max[2], build_max[3]);
                 missing_max = 0; vs_ready = vs_color = vs_pal = 0;
+                miss_lines = 0;
+                for (int b = 0; b < 4; b++) build_max[b] = 0;
                 fflush(stats);
                 if (getenv("TB_DEBUG")) {
                     fprintf(stderr, "frame %d:", frame);

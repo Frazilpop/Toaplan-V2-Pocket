@@ -826,13 +826,18 @@ always @(posedge clk) begin
         default: ;
     endcase
 
-    if (!reset_n || iram_we || iram_we_d) begin
-        psw_valid <= 1'b0;
-    end else if (rd_tag == RD_REF) begin
+    // The cached word is taken at every reference read; only psw_valid
+    // waits for the internal RAM to be free of writes (every use checks
+    // psw_ok). Gating the word too put iram_we, from the transaction
+    // address, on 35 enables: 94.5 MHz missed by 0.093 ns on the Pocket.
+    if (rd_tag == RD_REF) begin
         psw_cache <= iram_q[63:32];
         psw_bank <= ref_bank;
-        psw_valid <= 1'b1;
     end
+    if (!reset_n || iram_we || iram_we_d)
+        psw_valid <= 1'b0;
+    else if (rd_tag == RD_REF)
+        psw_valid <= 1'b1;
 end
 
 dogyuun_z8086 u_cpu (
