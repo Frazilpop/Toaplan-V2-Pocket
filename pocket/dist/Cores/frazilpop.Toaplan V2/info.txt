@@ -1,4 +1,4 @@
-Toaplan V2 with V25 sound: 68000 @ 16 MHz, NEC V25 @ 16 MHz, one or two GP9001 VDPs, YM2151 + OKI M6295
+Toaplan Version 2 board with V25 sound.
 
 Based on TheJesusFish/Arcade-Dogyuun_MiSTer (GPL-3.0), on pram0d's GP9001 and a z8086-based V25.
 Analogue Pocket port by Frazilpop.
