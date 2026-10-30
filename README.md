@@ -70,7 +70,7 @@ or you can use a tool like Pocket Updater.
 
 ### Copy to the Pocket
 
-1. Copy the `Cores`, `Platforms` and `Assets` folders from a release onto your Pocket's SD card.
+1. Download the zip from the latest release on GitHub and copy its `Cores`, `Platforms` and `Assets` folders onto your Pocket's SD card.
 2. Copy your `.rom` files into `Assets/toaplan2/common/` – for example `Assets/toaplan2/common/batsugun.rom`.
 3. On the Pocket: openFPGA → Arcade Multi → Toaplan V2, and pick your rom.
 
@@ -92,7 +92,7 @@ Opening the Analogue Pocket menu will pause the game.
 FixEight takes up to three players. On the Analogue Dock, the second and
 third players are the Dock's controllers 2 and 3.
 
-This includes usual **Display Mode** and **Controls** entries. Under **Core
+The Pocket's own menu has the usual **Display Mode** and **Controls** entries. Under **Core
 Settings** there are four options:
 
 - **Test Mode** – the arcade board's own test mode, with its input and sound checks. Turning it on restarts the game in test mode, and turning it off restarts it as normal. Batsugun, Dogyuun, Knuckle Bash and Grind Stormer take their settings (difficulty, lives etc) from switches on the board, which the core keeps at their defaults. FixEight keeps its settings in memory on the board instead: there Test Mode presses the board's test button, and L presses it again to step through the test screens to the menu where you set them. FixEight's settings are saved on the SD card.
@@ -120,9 +120,9 @@ Please note: The core screen rotation settings can only be used to rotate the An
 
 ## Technical details
 
-- The core recreates Toaplan's Version 2 board with the V25 in hardware logic, built on [TheJesusFish's Dogyuun MiSTer core](https://github.com/TheJesusFish/Arcade-Dogyuun_MiSTer) with a Pocket shell. One bitstream for every game decided by the ROM file.
-- It's been checked against MAME in simulation – the main processor's moves the same as MAME's but for a few loops that wait on the screen, every write of the sound processor identical, MAME's pictures redrawn pixel for pixel, and the music played from the same sound chip writes in the same order.
-- To build it yourself: `tools/bootstrap.sh`, then `sh pocket/build.sh` (Quartus Prime Lite 21.1 in Docker, about half an hour). The finished SD card layout can be found in `pocket/dist/`.
+- The core recreates Toaplan's Version 2 board with the V25 in hardware logic, built on [TheJesusFish's Dogyuun MiSTer core](https://github.com/TheJesusFish/Arcade-Dogyuun_MiSTer) with a Pocket shell. One bitstream plays every game; the ROM file decides which.
+- It's been checked against MAME in simulation – the main processor's moves matching MAME's but for a few loops that wait on the screen, every write of the sound processor identical, MAME's pictures redrawn pixel for pixel, and the music played from the same sound chip writes in the same order.
+- To build it yourself: `tools/bootstrap.sh`, then `sh pocket/build.sh` (Quartus Prime Lite 21.1 in Docker on Colima, with the repository under your home folder; about half an hour). The finished SD card layout can be found in `pocket/dist/`.
 
 ## Credits and licence
 
