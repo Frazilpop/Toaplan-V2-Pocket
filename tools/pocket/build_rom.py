@@ -44,7 +44,10 @@ logical order, for the Verilator harness.
 
 No ROM data is in this file. The V25 opcode tables are read from MAME's
 source at run time (third_party/mame/src/mame/toaplan/toaplan_v25_tables.h,
-tools/bootstrap.sh fetches it), not copied in.
+tools/bootstrap.sh fetches it), not copied in. Without the bootstrap they are
+read from the same tables as the bitstream holds them
+(rtl/sound/dogyuun_<name>_decryption.hex, the same 256 bytes), so a plain
+download of the repository makes the images too.
 """
 
 import argparse
@@ -417,9 +420,16 @@ _TABLES = None
 def v25_tables(src=V25_TABLES_SRC):
     """MAME's V25 opcode tables by name, plus the identity table."""
     global _TABLES
+    if _TABLES is None and not os.path.exists(src):
+        tabs = {"identity": list(range(256))}
+        for name in ("nitro", "ts001turbo"):
+            hexf = os.path.join(REPO, "rtl", "sound", f"dogyuun_{name}_decryption.hex")
+            vals = [int(v, 16) for v in open(hexf).read().split()]
+            if len(vals) != 256:
+                raise SystemExit(f"{hexf}: {len(vals)} entries, expected 256")
+            tabs[name] = vals
+        _TABLES = tabs
     if _TABLES is None:
-        if not os.path.exists(src):
-            raise SystemExit(f"need {src} for the V25 tables (tools/bootstrap.sh)")
         text = open(src, encoding="utf-8", errors="replace").read()
         # The tables are annotated in /* */ comments between the values.
         text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)

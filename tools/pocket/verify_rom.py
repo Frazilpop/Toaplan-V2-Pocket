@@ -16,7 +16,7 @@ then checks:
   * the header: magic, the board's fields, the slot table, the set name, and
     the DIP defaults against MAME's ports at power-on; the V25 table against
     MAME's toaplan_v25_tables.h (identity for TP-030), and the nitro table
-    against upstream's rtl/dogyuun/dogyuun_nitro_decryption.hex, a second
+    against upstream's dogyuun_nitro_decryption.hex (rtl/sound/), a second
     source;
   * for the TP-022 sets, the program, graphics and OKI slots against the
     byte stream upstream's Dogyuun MRA builds from the same files (program
@@ -38,7 +38,7 @@ import build_rom  # noqa: E402  (our own module, beside this file)
 
 REPO = build_rom.REPO
 LUA = os.path.join(REPO, "tools", "mame_toaplan2_regions.lua")
-NITRO_HEX = os.path.join(REPO, "rtl", "dogyuun", "dogyuun_nitro_decryption.hex")
+NITRO_HEX = os.path.join(REPO, "rtl", "sound", "dogyuun_nitro_decryption.hex")
 
 # Upstream's Dogyuun.mra: <part> for the program, an interleave output="32"
 # of (tp022_3, tp022_4) and of (tp022_5, tp022_6) with map 0021 / 2100, then
