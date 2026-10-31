@@ -1,0 +1,16 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "core_select": {
+            "id": 0,
+            "select": false
+        },
+        "data_path": "",
+        "data_slots": [
+            {
+                "id": 1,
+                "filename": "fixeightkt.rom"
+            }
+        ]
+    }
+}
