@@ -8,10 +8,10 @@
             ],
             "shortname": "Toaplan V2",
             "description": "Toaplan Version 2 arcade board – Batsugun, Dogyuun and more.",
-            "author": "Frazilpop",
+            "author": "frazilpop",
             "url": "https://github.com/Frazilpop/Toaplan-V2-Pocket",
-            "version": "1.0.0",
-            "date_release": "2026-10-30"
+            "version": "1.0.1",
+            "date_release": "2026-11-01"
         },
         "framework": {
             "target_product": "Analogue Pocket",
