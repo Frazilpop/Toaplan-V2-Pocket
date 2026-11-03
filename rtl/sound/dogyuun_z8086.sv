@@ -271,7 +271,6 @@ initial begin
     $readmemh(TS001_FILE, ts001_table);
 end
 
-assign v25_escape_active = escape_active;
 assign v25_escape_lead = escape_lead;
 assign v25_escape_byte = q_bus;
 assign v25_escape_byte_valid = escape_active & ~q_empty;
@@ -350,6 +349,12 @@ reg  [15:0] bus_ind;
 wire [19:0] bus_addr = {bus_seg, 4'b0000} + {4'b0000, bus_ind};
 reg         bus_wait; // stall EU while a Type-6 bus operation is in flight
 assign data_cycle = bus_wait;
+// An instruction's last store is issued as the instruction ends, so it can
+// still be waiting behind a prefetch or between the two bytes of an odd word
+// while the next thing runs. arch_load cancels the bus: neither an interrupt's
+// entry nor a V25 instruction may reach it until the store is out.
+wire eu_bus_busy = bus_pending | bus_wait;
+assign v25_escape_active = escape_active & ~eu_bus_busy;
 
 // Bus access control state machine
 always @(posedge clk) begin
@@ -704,7 +709,7 @@ assign instruction_done = clock_enable &
                           ((ROME & RNI) | (SC & g_1bl & ~g_prefix));
 assign instruction_opcode = IR;
 assign instruction_idle = loader_state == 2'd0 &&
-                          !ROME && !escape_active;
+                          !ROME && !escape_active && !eu_bus_busy;
 
 always @(posedge clk) begin
     if (clock_enable && EXEC & ~stall) begin

@@ -134,3 +134,19 @@ set_multicycle_path -start -setup -from $fx_ir -to $fx_ua 2
 set_multicycle_path -start -hold  -from $fx_ir -to $fx_ua 1
 set_multicycle_path -start -setup -from $fx_ir -to $fx_na 2
 set_multicycle_path -start -hold  -from $fx_ir -to $fx_na 1
+
+# ---------------------------------------------------------------- overlay
+#
+# pocket_diag's colour is combinational on its position and the digit it holds,
+# which change only on ce_pix, and is taken only on ce_pix: the same enable,
+# fourteen clocks apart. Two are declared, so the overlay's font does not set
+# the core's worst path.
+set diag_xy  [get_keepers -nowarn {*|pocket_diag:u_diag|x[*]* *|pocket_diag:u_diag|y[*]* *|pocket_diag:u_diag|digit_q[*]* *|pocket_diag:u_diag|blank_q*}]
+set diag_pix [get_keepers -nowarn {*|pocket_video:u_video|hold_rgb[*] *|pocket_analogizer:u_analogizer|hr[*] *|pocket_analogizer:u_analogizer|hg[*] *|pocket_analogizer:u_analogizer|hb[*]}]
+foreach {name c} [list diag_xy $diag_xy diag_pix $diag_pix] {
+    if {[get_collection_size $c] == 0} {
+        post_message -type error "core_constraints.sdc: overlay keepers '$name' not found. The exception below would silently do nothing."
+    }
+}
+set_multicycle_path -setup -from $diag_xy -to $diag_pix 2
+set_multicycle_path -hold  -from $diag_xy -to $diag_pix 1

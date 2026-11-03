@@ -114,9 +114,18 @@ module pocket_diag (
     wire [31:0] val      = cnt[32*ctr +: 32];
     wire [2:0]  nib      = 3'd7 - (ch[2:0] - 3'd2);           // digit ch-2, MS first
     wire [3:0]  digit    = (ch == 4'd0) ? {1'b0, ctr} : val[4*nib +: 4];
-    wire        blank_ch = (ch == 4'd1);
-    wire [7:0]  g_row    = glyph(digit, y[2:0]);
-    wire        text_on  = !blank_ch && g_row[3'd7 - ccol];
+    // The digit is held a pixel, so that the counters, their selection and the
+    // font are not all one clock's work; the text sits a pixel to the right
+    // for it (the font's right column is blank, so nothing is lost).
+    reg  [3:0]  digit_q  = 4'd0;
+    reg         blank_q  = 1'b0;
+    always @(posedge clk) if (ce_pix) begin
+        digit_q <= digit;
+        blank_q <= (ch == 4'd1);
+    end
+    wire [2:0]  ccol_q   = ccol - 3'd1;
+    wire [7:0]  g_row    = glyph(digit_q, y[2:0]);
+    wire        text_on  = !blank_q && g_row[3'd7 - ccol_q];
 
     // ---------------------------------------------------------- bars
     // White, yellow, cyan, green, magenta, red, blue, dark grey: 40 px each.
